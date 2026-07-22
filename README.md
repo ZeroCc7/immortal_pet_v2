@@ -41,7 +41,7 @@
 
 本项目固定使用 **ESP-IDF** 开发 ESP32-S3 固件。Arduino 示例仅用于参考微雪官方外设初始化方式，不作为项目框架，也不引入 Arduino 兼容层。界面使用 LVGL，并优先复用微雪官方 ESP-IDF BSP、驱动和示例完成首轮硬件验证。
 
-唯一开发仓库是 `immortal_pet_v2`，实际可构建的 ESP-IDF 工程位于 `firmware/device`。在 VS Code 中直接打开仓库根目录 `G:\code\immortal_pet_v2`；仓库内的 `.vscode/settings.json` 已将 ESP-IDF 工程目录指向 `firmware/device`。
+唯一开发仓库和构建入口都是 `immortal_pet_v2`。实际设备源码位于 `firmware/device`，仓库根目录的 `CMakeLists.txt` 已将其接入 ESP-IDF。VS Code 直接打开 `G:\code\immortal_pet_v2`，即可在首页使用 ESP-IDF 的 Build、Flash 和 Monitor。
 
 仓库同时保存了目标板的 `sdkconfig`：ESP32-S3、Waveshare 2.16 英寸 AMOLED、设备端 AEC 和 `IMMORTAL_PET_V2` 均已启用。完成 ESP-IDF 扩展环境配置并选择串口后，可直接使用 Build、Flash 和 Monitor。
 

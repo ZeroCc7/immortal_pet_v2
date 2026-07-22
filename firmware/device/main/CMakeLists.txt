@@ -1101,14 +1101,16 @@ target_compile_definitions(${COMPONENT_LIB}
                     )
 
 # Add generation rules
+get_filename_component(DEVICE_PROJECT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+
 add_custom_command(
     OUTPUT ${LANG_HEADER}
-    COMMAND python ${PROJECT_DIR}/scripts/gen_lang.py
+    COMMAND python ${DEVICE_PROJECT_DIR}/scripts/gen_lang.py
             --language "${LANG_DIR}"
             --output "${LANG_HEADER}"
     DEPENDS
         ${LANG_JSON}
-        ${PROJECT_DIR}/scripts/gen_lang.py
+        ${DEVICE_PROJECT_DIR}/scripts/gen_lang.py
     COMMENT "Generating ${LANG_DIR} language config"
 )
 
@@ -1201,7 +1203,7 @@ function(build_default_assets_bin)
     set(GENERATED_ASSETS_BIN "${CMAKE_BINARY_DIR}/generated_assets.bin")
     set(DEFAULT_ASSETS_DEPENDENCIES
         "${SDKCONFIG}"
-        "${PROJECT_DIR}/scripts/build_default_assets.py"
+        "${DEVICE_PROJECT_DIR}/scripts/build_default_assets.py"
     )
 
     # Prepare arguments for build script
@@ -1243,7 +1245,7 @@ function(build_default_assets_bin)
     # Create custom command to build assets
     add_custom_command(
         OUTPUT ${GENERATED_ASSETS_BIN}
-        COMMAND python ${PROJECT_DIR}/scripts/build_default_assets.py ${BUILD_ARGS}
+        COMMAND python ${DEVICE_PROJECT_DIR}/scripts/build_default_assets.py ${BUILD_ARGS}
         DEPENDS ${DEFAULT_ASSETS_DEPENDENCIES}
         COMMENT "Building default assets.bin based on configuration"
         VERBATIM
