@@ -125,13 +125,14 @@ private:
 
     void CreateActionButton(lv_obj_t* parent, int index, const char* label, PetAction action) {
         auto* button = lv_obj_create(parent);
-        lv_obj_set_size(button, 104, 52);
+        lv_obj_set_size(button, 102, 54);
         lv_obj_set_style_radius(button, 18, 0);
         lv_obj_set_style_border_width(button, 1, 0);
         lv_obj_set_style_border_color(button, lv_color_hex(0x80674A), 0);
         lv_obj_set_style_bg_color(button, lv_color_hex(0x2B241D), 0);
         lv_obj_set_style_bg_color(button, lv_color_hex(0x6B5032), LV_STATE_PRESSED);
         lv_obj_set_style_pad_all(button, 0, 0);
+        lv_obj_remove_flag(button, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
 
         auto* text = lv_label_create(button);
@@ -177,50 +178,101 @@ public:
     }
 
     virtual void SetupUI() override {
+#if !CONFIG_IMMORTAL_PET_V2
         SpiLcdDisplay::SetupUI();
-
+#else
+        if (setup_ui_called_) {
+            return;
+        }
+        Display::SetupUI();
         DisplayLockGuard lock(this);
-        lv_obj_set_style_pad_left(status_bar_, LV_HOR_RES*  0.1, 0);
-        lv_obj_set_style_pad_right(status_bar_, LV_HOR_RES*  0.1, 0);
-        lv_display_add_event_cb(display_, rounder_event_cb, LV_EVENT_INVALIDATE_AREA, NULL);
 
-#if CONFIG_IMMORTAL_PET_V2
         auto* screen = lv_screen_active();
+        lv_obj_clean(screen);
         lv_obj_set_style_bg_color(screen, lv_color_hex(0x100F0C), 0);
+        lv_obj_set_style_text_color(screen, lv_color_hex(0xF4E7CD), 0);
+
+        auto* theme = static_cast<LvglTheme*>(current_theme_);
+        auto* text_font = theme->text_font()->font();
+        auto* icon_font = theme->icon_font()->font();
+        lv_obj_set_style_text_font(screen, text_font, 0);
+
+        container_ = lv_obj_create(screen);
+        lv_obj_set_size(container_, 480, 480);
+        lv_obj_set_style_radius(container_, 0, 0);
+        lv_obj_set_style_border_width(container_, 0, 0);
+        lv_obj_set_style_pad_all(container_, 0, 0);
         lv_obj_set_style_bg_color(container_, lv_color_hex(0x100F0C), 0);
-        lv_obj_set_style_bg_opa(top_bar_, LV_OPA_40, 0);
-        lv_obj_set_style_bg_color(top_bar_, lv_color_hex(0x1C1813), 0);
-        lv_obj_add_flag(status_label_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(container_, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+
+        top_bar_ = lv_obj_create(screen);
+        lv_obj_set_size(top_bar_, 480, 40);
+        lv_obj_set_style_radius(top_bar_, 0, 0);
+        lv_obj_set_style_border_width(top_bar_, 0, 0);
+        lv_obj_set_style_pad_left(top_bar_, 14, 0);
+        lv_obj_set_style_pad_right(top_bar_, 14, 0);
+        lv_obj_set_style_pad_top(top_bar_, 4, 0);
+        lv_obj_set_style_pad_bottom(top_bar_, 4, 0);
+        lv_obj_set_style_bg_color(top_bar_, lv_color_hex(0x1B1712), 0);
+        lv_obj_set_style_bg_opa(top_bar_, LV_OPA_COVER, 0);
+        lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_align(top_bar_, LV_ALIGN_TOP_MID, 0, 0);
+
+        network_label_ = lv_label_create(top_bar_);
+        lv_label_set_text(network_label_, "");
+        lv_obj_set_style_text_font(network_label_, icon_font, 0);
+        lv_obj_align(network_label_, LV_ALIGN_LEFT_MID, 0, 0);
+
+        mute_label_ = lv_label_create(top_bar_);
+        lv_label_set_text(mute_label_, "");
+        lv_obj_set_style_text_font(mute_label_, icon_font, 0);
+        lv_obj_align(mute_label_, LV_ALIGN_RIGHT_MID, -36, 0);
+
+        battery_label_ = lv_label_create(top_bar_);
+        lv_label_set_text(battery_label_, "");
+        lv_obj_set_style_text_font(battery_label_, icon_font, 0);
+        lv_obj_align(battery_label_, LV_ALIGN_RIGHT_MID, 0, 0);
+
+        notification_label_ = lv_label_create(top_bar_);
+        lv_obj_set_width(notification_label_, 310);
+        lv_label_set_long_mode(notification_label_, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_align(notification_label_, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text(notification_label_, "");
+        lv_obj_align(notification_label_, LV_ALIGN_CENTER, 0, 0);
+        lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
 
         pet_title_label_ = lv_label_create(screen);
-        lv_label_set_text(pet_title_label_, "随身洞府  ·  无名幼灵");
+        lv_label_set_text(pet_title_label_, "随身洞府 · 无名幼灵");
         lv_obj_set_style_text_color(pet_title_label_, lv_color_hex(0xE8C986), 0);
-        lv_obj_align(pet_title_label_, LV_ALIGN_TOP_MID, 0, 48);
+        lv_obj_align(pet_title_label_, LV_ALIGN_TOP_MID, 0, 47);
 
         pet_state_label_ = lv_label_create(screen);
-        lv_label_set_text(pet_state_label_, "灵宠正在洞府中陪伴你");
+        lv_obj_set_width(pet_state_label_, 380);
+        lv_label_set_long_mode(pet_state_label_, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_align(pet_state_label_, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text(pet_state_label_, "灵宠正在陪伴你");
         lv_obj_set_style_text_color(pet_state_label_, lv_color_hex(0xAFA58F), 0);
-        lv_obj_align(pet_state_label_, LV_ALIGN_TOP_MID, 0, 84);
+        lv_obj_align(pet_state_label_, LV_ALIGN_TOP_MID, 0, 83);
+        status_label_ = pet_state_label_;
 
         pet_stats_label_ = lv_label_create(screen);
-        lv_obj_set_width(pet_stats_label_, 440);
-        lv_label_set_text(pet_stats_label_, "修为 0   精力 100   心境 50   灵石 0");
+        lv_obj_set_width(pet_stats_label_, 390);
+        lv_label_set_text(pet_stats_label_, "修为 0    精力 100\n心境 50    灵石 0");
         lv_obj_set_style_text_align(pet_stats_label_, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_color(pet_stats_label_, lv_color_hex(0xD7C8A6), 0);
-        lv_obj_align(pet_stats_label_, LV_ALIGN_TOP_MID, 0, 120);
+        lv_obj_align(pet_stats_label_, LV_ALIGN_TOP_MID, 0, 119);
 
-        // The pet is drawn locally so the product never falls back to Xiaozhi's robot avatar.
         pet_avatar_ = lv_obj_create(screen);
-        lv_obj_set_size(pet_avatar_, 158, 158);
+        lv_obj_set_size(pet_avatar_, 138, 138);
         lv_obj_set_style_radius(pet_avatar_, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_border_width(pet_avatar_, 4, 0);
         lv_obj_set_style_border_color(pet_avatar_, lv_color_hex(0xCE9D55), 0);
         lv_obj_set_style_bg_color(pet_avatar_, lv_color_hex(0xE9C98F), 0);
         lv_obj_set_style_shadow_color(pet_avatar_, lv_color_hex(0xDDA95C), 0);
-        lv_obj_set_style_shadow_width(pet_avatar_, 28, 0);
+        lv_obj_set_style_shadow_width(pet_avatar_, 20, 0);
         lv_obj_set_style_shadow_opa(pet_avatar_, LV_OPA_40, 0);
-        lv_obj_align(pet_avatar_, LV_ALIGN_CENTER, 0, -28);
+        lv_obj_remove_flag(pet_avatar_, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_align(pet_avatar_, LV_ALIGN_CENTER, 0, -18);
 
         pet_face_label_ = lv_label_create(pet_avatar_);
         lv_label_set_text(pet_face_label_, "^     ^\n   w");
@@ -229,27 +281,42 @@ public:
         lv_obj_center(pet_face_label_);
 
         pet_dialog_label_ = lv_label_create(screen);
-        lv_obj_set_width(pet_dialog_label_, 420);
+        lv_obj_set_width(pet_dialog_label_, 430);
         lv_label_set_long_mode(pet_dialog_label_, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_align(pet_dialog_label_, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_color(pet_dialog_label_, lv_color_hex(0xB8AD98), 0);
-        lv_label_set_text(pet_dialog_label_, "我一直都在。点“对话”或按实体键和我说话。");
-        lv_obj_align(pet_dialog_label_, LV_ALIGN_CENTER, 0, 82);
+        lv_label_set_text(pet_dialog_label_, "点“对话”或按实体键和我说话");
+        lv_obj_align(pet_dialog_label_, LV_ALIGN_CENTER, 0, 76);
 
         pet_actions_ = lv_obj_create(screen);
-        lv_obj_set_size(pet_actions_, 456, 60);
+        lv_obj_set_size(pet_actions_, 452, 62);
         lv_obj_set_style_bg_opa(pet_actions_, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(pet_actions_, 0, 0);
         lv_obj_set_style_pad_all(pet_actions_, 0, 0);
-        lv_obj_set_style_pad_column(pet_actions_, 10, 0);
+        lv_obj_set_style_pad_column(pet_actions_, 8, 0);
         lv_obj_set_flex_flow(pet_actions_, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(pet_actions_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);
-        lv_obj_align(pet_actions_, LV_ALIGN_BOTTOM_MID, 0, -12);
+        lv_obj_remove_flag(pet_actions_, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_align(pet_actions_, LV_ALIGN_BOTTOM_MID, 0, -8);
         CreateActionButton(pet_actions_, 0, "吐纳", PetAction::kBreathing);
         CreateActionButton(pet_actions_, 1, "游历", PetAction::kJourney);
         CreateActionButton(pet_actions_, 2, "领取", PetAction::kClaim);
         CreateActionButton(pet_actions_, 3, "对话", PetAction::kTalk);
+
+        low_battery_popup_ = lv_obj_create(screen);
+        lv_obj_set_size(low_battery_popup_, 420, 52);
+        lv_obj_set_style_radius(low_battery_popup_, 16, 0);
+        lv_obj_set_style_border_width(low_battery_popup_, 0, 0);
+        lv_obj_set_style_bg_color(low_battery_popup_, lv_color_hex(0x8A3028), 0);
+        lv_obj_align(low_battery_popup_, LV_ALIGN_BOTTOM_MID, 0, -76);
+        low_battery_label_ = lv_label_create(low_battery_popup_);
+        lv_label_set_text(low_battery_label_, Lang::Strings::BATTERY_NEED_CHARGE);
+        lv_obj_center(low_battery_label_);
+        lv_obj_add_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
+
+        lv_obj_move_foreground(pet_actions_);
+        lv_display_add_event_cb(display_, rounder_event_cb, LV_EVENT_INVALIDATE_AREA, NULL);
 #endif
     }
 
@@ -264,9 +331,9 @@ public:
             return;
         }
         const std::string text = "修为 " + std::to_string(state.cultivation) +
-            "   精力 " + std::to_string(state.energy) +
-            "   心境 " + std::to_string(state.mood) +
-            "   灵石 " + std::to_string(state.spirit_stones);
+            "    精力 " + std::to_string(state.energy) +
+            "\n心境 " + std::to_string(state.mood) +
+            "    灵石 " + std::to_string(state.spirit_stones);
         lv_label_set_text(pet_stats_label_, text.c_str());
     }
 
