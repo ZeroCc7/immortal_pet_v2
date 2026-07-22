@@ -45,6 +45,41 @@
 
 `firmware/device/sdkconfig` 已固定为 ESP32-S3、Waveshare 2.16 英寸 AMOLED、设备端 AEC 和 `IMMORTAL_PET_V2`。
 
+## 编译与烧录（唯一入口）
+
+**不要在仓库根目录 `G:\code\immortal_pet_v2` 构建。** 唯一可构建目录是：
+
+```text
+G:\code\immortal_pet_v2\firmware\device
+```
+
+### VS Code（推荐）
+
+1. 关闭当前根目录窗口，在 VS Code 选择“文件 → 打开文件夹”，打开 `G:\code\immortal_pet_v2\firmware\device`。
+2. 确认状态栏显示 ESP-IDF 环境，目标芯片为 `esp32s3`。
+3. 使用命令面板依次执行：`ESP-IDF: Build your project`、`ESP-IDF: Select port to use`、`ESP-IDF: Flash your project`。
+4. 烧录完成后执行 `ESP-IDF: Monitor your device` 查看启动日志；退出监视器使用 `Ctrl+]`。
+
+### ESP-IDF 终端
+
+在已加载 ESP-IDF 6.0.2 环境的 PowerShell 中运行：
+
+```powershell
+cd G:\code\immortal_pet_v2\firmware\device
+$env:IDF_TARGET = "esp32s3"
+idf.py build
+idf.py -p COMx flash monitor
+```
+
+将 `COMx` 改为设备的实际串口，例如 `COM5`。首次构建会下载受管组件，需保持网络可用。
+
+### 常见故障
+
+- 出现 “source directory ... does not contain CMakeLists.txt”：说明打开了仓库根目录；改为打开 `firmware/device`。
+- 出现 `IDF_TARGET ... esp32` 与 `esp32s3` 不一致：在上述目录执行 `$env:IDF_TARGET = "esp32s3"` 后重新 Build；不要运行 `idf.py set-target esp32`。
+- 出现 Ninja `Permission denied` 或 `failed recompaction`：完全退出 VS Code，确认没有残留构建任务后重新打开 `firmware/device` 再 Build。
+- 出现组件 `.component_hash` / `CHECKSUMS.json` 完整性错误：删除 `firmware/device/managed_components` 和 `firmware/device/dependencies.lock`，然后执行 `idf.py reconfigure`。
+
 智能语音固定接入 [78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32)。小智负责唤醒、录音、AEC、Opus 音频流、语音会话、服务端通信和 MCP 能力；本项目保留修仙灵宠 UI、游戏状态、数值、存档、人格记忆和安全边界的控制权。小智主线已经提供 `waveshare/esp32-s3-touch-amoled-2.16` 专用板卡适配，首轮以该适配跑通原厂语音链路，再逐步接入游戏层，不从零重写音频底层。
 
 详细边界和实施顺序见 [小智 AI 语音接入方案](docs/xiaozhi-ai-integration.md)。
