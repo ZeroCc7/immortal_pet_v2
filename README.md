@@ -41,6 +41,8 @@
 
 本项目固定使用 **ESP-IDF** 开发 ESP32-S3 固件。Arduino 示例仅用于参考微雪官方外设初始化方式，不作为项目框架，也不引入 Arduino 兼容层。界面使用 LVGL，并优先复用微雪官方 ESP-IDF BSP、驱动和示例完成首轮硬件验证。
 
+唯一开发仓库是 `immortal_pet_v2`，实际可构建的 ESP-IDF 工程位于 `firmware/device`。在 VS Code 中直接打开仓库根目录 `G:\code\immortal_pet_v2`；仓库内的 `.vscode/settings.json` 已将 ESP-IDF 工程目录指向 `firmware/device`。
+
 智能语音固定接入 [78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32)。小智负责唤醒、录音、AEC、Opus 音频流、语音会话、服务端通信和 MCP 能力；本项目保留修仙灵宠 UI、游戏状态、数值、存档、人格记忆和安全边界的控制权。小智主线已经提供 `waveshare/esp32-s3-touch-amoled-2.16` 专用板卡适配，首轮以该适配跑通原厂语音链路，再逐步接入游戏层，不从零重写音频底层。
 
 详细边界和实施顺序见 [小智 AI 语音接入方案](docs/xiaozhi-ai-integration.md)。
@@ -84,6 +86,7 @@
 ```text
 immortal_pet_v2/
 ├─ firmware/                 # ESP-IDF 固件
+│  ├─ device/               # 实际构建、烧录的完整设备工程
 │  ├─ components/
 │  │  ├─ game_core/         # 确定性规则和游戏状态
 │  │  ├─ display/           # LVGL、动画和资源渲染
@@ -167,6 +170,7 @@ V0.1 不做多人实时战斗、复杂装备、开放世界、摄像头识别、
 - [x] 实现首版确定性 game_core（精力、吐纳、后山游历和活动结算）
 - [x] 建立灵宠专属设备主页和本地玩法入口（吐纳、游历、领取、对话）
 - [x] 将小智通用界面隐藏到语音实现层
+- [x] 固件源码并入主仓库，统一为单仓库开发入口
 - [ ] 完成 V0.1 游戏与 LLM 互动规格
 - [ ] 实现第一条端到端原型链路
 
