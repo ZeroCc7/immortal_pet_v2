@@ -1,4 +1,0 @@
-[submodule "third_party/xiaozhi-esp32"]
-	path = third_party/xiaozhi-esp32
-	url = https://github.com/ZeroCc7/xiaozhi-esp32.git
-	branch = codex/immortal-pet-v0

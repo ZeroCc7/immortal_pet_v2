@@ -43,6 +43,8 @@
 
 唯一开发仓库是 `immortal_pet_v2`，实际可构建的 ESP-IDF 工程位于 `firmware/device`。在 VS Code 中直接打开仓库根目录 `G:\code\immortal_pet_v2`；仓库内的 `.vscode/settings.json` 已将 ESP-IDF 工程目录指向 `firmware/device`。
 
+仓库同时保存了目标板的 `sdkconfig`：ESP32-S3、Waveshare 2.16 英寸 AMOLED、设备端 AEC 和 `IMMORTAL_PET_V2` 均已启用。完成 ESP-IDF 扩展环境配置并选择串口后，可直接使用 Build、Flash 和 Monitor。
+
 智能语音固定接入 [78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32)。小智负责唤醒、录音、AEC、Opus 音频流、语音会话、服务端通信和 MCP 能力；本项目保留修仙灵宠 UI、游戏状态、数值、存档、人格记忆和安全边界的控制权。小智主线已经提供 `waveshare/esp32-s3-touch-amoled-2.16` 专用板卡适配，首轮以该适配跑通原厂语音链路，再逐步接入游戏层，不从零重写音频底层。
 
 详细边界和实施顺序见 [小智 AI 语音接入方案](docs/xiaozhi-ai-integration.md)。

@@ -1,3 +1,6 @@
 {
-  "idf.projectDirPath": "${workspaceFolder}/firmware/device"
+  "idf.projectDirPath": "${workspaceFolder}/firmware/device",
+  "files.exclude": {
+    "third_party/xiaozhi-esp32": true
+  }
 }
