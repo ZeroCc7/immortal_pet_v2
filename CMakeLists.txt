@@ -4,6 +4,7 @@ cmake_minimum_required(VERSION 3.16)
 add_compile_options(-Wno-missing-field-initializers)
 
 set(DEVICE_PROJECT_DIR "${CMAKE_CURRENT_LIST_DIR}/firmware/device")
+set(IDF_TARGET "esp32s3" CACHE STRING "ESP-IDF target" FORCE)
 set(EXTRA_COMPONENT_DIRS "${DEVICE_PROJECT_DIR}/main")
 set(SDKCONFIG "${DEVICE_PROJECT_DIR}/sdkconfig")
 set(SDKCONFIG_DEFAULTS
