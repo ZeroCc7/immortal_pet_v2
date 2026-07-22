@@ -25,6 +25,7 @@
 
 #if CONFIG_IMMORTAL_PET_V2
 #include "immortal_pet/game_engine.h"
+#include "display/lvgl_display/lvgl_theme.h"
 #include <esp_timer.h>
 #include <mutex>
 #include <string>
@@ -203,7 +204,8 @@ public:
         lv_obj_set_style_border_width(container_, 0, 0);
         lv_obj_set_style_pad_all(container_, 0, 0);
         lv_obj_set_style_bg_color(container_, lv_color_hex(0x100F0C), 0);
-        lv_obj_remove_flag(container_, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(container_, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(container_, LV_OBJ_FLAG_CLICKABLE);
 
         top_bar_ = lv_obj_create(screen);
         lv_obj_set_size(top_bar_, 480, 40);
@@ -215,7 +217,8 @@ public:
         lv_obj_set_style_pad_bottom(top_bar_, 4, 0);
         lv_obj_set_style_bg_color(top_bar_, lv_color_hex(0x1B1712), 0);
         lv_obj_set_style_bg_opa(top_bar_, LV_OPA_COVER, 0);
-        lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_align(top_bar_, LV_ALIGN_TOP_MID, 0, 0);
 
         network_label_ = lv_label_create(top_bar_);
@@ -271,7 +274,8 @@ public:
         lv_obj_set_style_shadow_color(pet_avatar_, lv_color_hex(0xDDA95C), 0);
         lv_obj_set_style_shadow_width(pet_avatar_, 20, 0);
         lv_obj_set_style_shadow_opa(pet_avatar_, LV_OPA_40, 0);
-        lv_obj_remove_flag(pet_avatar_, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(pet_avatar_, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(pet_avatar_, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_align(pet_avatar_, LV_ALIGN_CENTER, 0, -18);
 
         pet_face_label_ = lv_label_create(pet_avatar_);
@@ -297,7 +301,8 @@ public:
         lv_obj_set_flex_flow(pet_actions_, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(pet_actions_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);
-        lv_obj_remove_flag(pet_actions_, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(pet_actions_, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(pet_actions_, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_align(pet_actions_, LV_ALIGN_BOTTOM_MID, 0, -8);
         CreateActionButton(pet_actions_, 0, "吐纳", PetAction::kBreathing);
         CreateActionButton(pet_actions_, 1, "游历", PetAction::kJourney);
