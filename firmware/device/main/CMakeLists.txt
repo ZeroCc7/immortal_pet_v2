@@ -874,6 +874,11 @@ elseif(CONFIG_BOARD_TYPE_AI_VOX3)
     set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_64)
 endif()
 
+if(CONFIG_IMMORTAL_PET_V2)
+    set(DEFAULT_ASSETS_EXTRA_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/immortal_pet/home")
+endif()
+
 if(MANUFACTURER)
     file(GLOB BOARD_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/boards/${MANUFACTURER}/${BOARD_TYPE}/*.cc
@@ -1237,6 +1242,10 @@ function(build_default_assets_bin)
     # Add default assets extra files if defined
     if(DEFAULT_ASSETS_EXTRA_FILES)
         list(APPEND BUILD_ARGS "--extra_files" "${DEFAULT_ASSETS_EXTRA_FILES}")
+        file(GLOB_RECURSE DEFAULT_ASSETS_EXTRA_FILE_LIST CONFIGURE_DEPENDS
+            "${DEFAULT_ASSETS_EXTRA_FILES}/*"
+        )
+        list(APPEND DEFAULT_ASSETS_DEPENDENCIES ${DEFAULT_ASSETS_EXTRA_FILE_LIST})
     endif()
 
     list(APPEND BUILD_ARGS "--esp_sr_model_path" "${ESP_SR_MODEL_PATH}")

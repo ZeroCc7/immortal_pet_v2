@@ -29,7 +29,7 @@
 - `firmware/components/game_core/tests/game_engine_test.cpp`: host tests for every rule.
 - `firmware/device/main/CMakeLists.txt`: link firmware to the shared core.
 - `firmware/device/main/immortal_pet/game_engine.h` and `.cpp`: delete after consumers use the shared component.
-- `firmware/device/main/boards/waveshare/esp32-s3-touch-amoled-2.16/esp32-s3-touch-amoled-2.16.cc`: local-time adapter, onboarding, UI, MCP read-only status.
+- `firmware/device/main/boards/waveshare/esp32-s3-touch-amoled-2.16/esp32-s3-touch-amoled-2.16.cc`: local-time adapter, onboarding, UI, and read-only state exposure.
 - `docs/gameplay-and-entrypoints.md` and `docs/xiaozhi-ai-integration.md`: player flow and AI boundary.
 
 ## First-pass Balance Constants
@@ -284,9 +284,9 @@ Breakthrough: missing level/cultivation/equipment gate is shown; a ready breakth
 
 Replace bottom actions `吐纳 / 游历 / 领取 / 对话` with `修炼 / 历练 / 休息 / 对话`. Make one board-local adapter convert local wall clock into `local_day` and `DailyPeriod`; it calls `ResolveMissedPeriods` then `ChooseAction`. Remove arbitrary-duration journeys and the claim action. Use the status card for a shop entry rather than adding a fifth permanent button. Replace player-facing `灵宠` with `修士` or configured role name.
 
-- [ ] **Step 3: Limit MCP to deterministic action dispatch.**
+- [ ] **Step 3: Keep AI state exposure read-only.**
 
-Expose `get_status`, `choose_daily_action(action)`, `buy_equipment(slot)`, and `breakthrough`. Each handler takes `game_mutex_`, invokes the local core, updates the display after successful mutation, and returns the engine-calculated result. Descriptions must say narration cannot alter rewards. Free chat remains on the existing audio path.
+Expose only a read-only `get_status` snapshot for service-side persona and narration. Do not expose action selection, equipment purchase, or breakthrough as voice/MCP commands in this version; the user explicitly chose to perform those actions through local UI. Free chat remains on the existing audio path and cannot mutate gameplay.
 
 - [ ] **Step 4: Build, perform checklist, and commit.**
 

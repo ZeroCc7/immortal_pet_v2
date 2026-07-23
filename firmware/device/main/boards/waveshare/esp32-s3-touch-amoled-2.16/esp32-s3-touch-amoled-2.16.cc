@@ -4,6 +4,7 @@
 
 #include "codecs/box_audio_codec.h"
 #include "application.h"
+#include "assets.h"
 #include "assets/lang_config.h"
 #include "button.h"
 #include "led/single_led.h"
@@ -26,7 +27,9 @@
 #if CONFIG_IMMORTAL_PET_V2
 #include "immortal_pet/game_engine.h"
 #include "display/lvgl_display/lvgl_theme.h"
+#include "display/lvgl_display/lvgl_image.h"
 #include <esp_timer.h>
+#include <memory>
 #include <mutex>
 #include <string>
 #endif
@@ -112,10 +115,13 @@ private:
     lv_obj_t* pet_title_label_ = nullptr;
     lv_obj_t* pet_state_label_ = nullptr;
     lv_obj_t* pet_stats_label_ = nullptr;
+    lv_obj_t* pet_dialog_panel_ = nullptr;
     lv_obj_t* pet_dialog_label_ = nullptr;
     lv_obj_t* pet_avatar_ = nullptr;
     lv_obj_t* pet_face_label_ = nullptr;
     lv_obj_t* pet_actions_ = nullptr;
+    std::unique_ptr<LvglRawImage> home_background_;
+    std::unique_ptr<LvglRawImage> home_action_backgrounds_[4];
 
     static void OnActionClicked(lv_event_t* event) {
         auto* binding = static_cast<ActionBinding*>(lv_event_get_user_data(event));
@@ -126,20 +132,28 @@ private:
 
     void CreateActionButton(lv_obj_t* parent, int index, const char* label, PetAction action) {
         auto* button = lv_obj_create(parent);
-        lv_obj_set_size(button, 102, 54);
-        lv_obj_set_style_radius(button, 18, 0);
-        lv_obj_set_style_border_width(button, 1, 0);
-        lv_obj_set_style_border_color(button, lv_color_hex(0x80674A), 0);
-        lv_obj_set_style_bg_color(button, lv_color_hex(0x2B241D), 0);
-        lv_obj_set_style_bg_color(button, lv_color_hex(0x6B5032), LV_STATE_PRESSED);
+        lv_obj_set_size(button, 102, 108);
+        lv_obj_set_style_radius(button, 20, 0);
+        lv_obj_set_style_border_width(button, 2, 0);
+        lv_obj_set_style_border_color(button, lv_color_hex(0xE5C97F), 0);
+        lv_obj_set_style_bg_color(button, lv_color_hex(0x164D45), 0);
+        lv_obj_set_style_bg_color(button, lv_color_hex(0x277769), LV_STATE_PRESSED);
+        if (index >= 0 && index < 4 && home_action_backgrounds_[index] != nullptr) {
+            auto* icon = lv_image_create(button);
+            lv_image_set_src(icon, home_action_backgrounds_[index]->image_dsc());
+            lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 4);
+        }
+        lv_obj_set_style_shadow_color(button, lv_color_hex(0x081A18), 0);
+        lv_obj_set_style_shadow_width(button, 8, 0);
+        lv_obj_set_style_shadow_opa(button, LV_OPA_40, 0);
         lv_obj_set_style_pad_all(button, 0, 0);
         lv_obj_remove_flag(button, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
 
         auto* text = lv_label_create(button);
         lv_label_set_text(text, label);
-        lv_obj_set_style_text_color(text, lv_color_hex(0xF4DEB3), 0);
-        lv_obj_center(text);
+        lv_obj_set_style_text_color(text, lv_color_hex(0xFFF0C9), 0);
+        lv_obj_align(text, LV_ALIGN_BOTTOM_MID, 0, -7);
 
         action_bindings_[index] = {this, action};
         lv_obj_add_event_cb(button, OnActionClicked, LV_EVENT_CLICKED, &action_bindings_[index]);
@@ -190,7 +204,7 @@ public:
 
         auto* screen = lv_screen_active();
         lv_obj_clean(screen);
-        lv_obj_set_style_bg_color(screen, lv_color_hex(0x100F0C), 0);
+        lv_obj_set_style_bg_color(screen, lv_color_hex(0x061614), 0);
         lv_obj_set_style_text_color(screen, lv_color_hex(0xF4E7CD), 0);
 
         auto* theme = static_cast<LvglTheme*>(current_theme_);
@@ -203,7 +217,8 @@ public:
         lv_obj_set_style_radius(container_, 0, 0);
         lv_obj_set_style_border_width(container_, 0, 0);
         lv_obj_set_style_pad_all(container_, 0, 0);
-        lv_obj_set_style_bg_color(container_, lv_color_hex(0x100F0C), 0);
+        lv_obj_set_style_bg_color(container_, lv_color_hex(0x061614), 0);
+        lv_obj_set_style_bg_opa(container_, LV_OPA_TRANSP, 0);
         lv_obj_remove_flag(container_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_remove_flag(container_, LV_OBJ_FLAG_CLICKABLE);
 
@@ -215,11 +230,45 @@ public:
         lv_obj_set_style_pad_right(top_bar_, 14, 0);
         lv_obj_set_style_pad_top(top_bar_, 4, 0);
         lv_obj_set_style_pad_bottom(top_bar_, 4, 0);
-        lv_obj_set_style_bg_color(top_bar_, lv_color_hex(0x1B1712), 0);
-        lv_obj_set_style_bg_opa(top_bar_, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(top_bar_, lv_color_hex(0x09211E), 0);
+        lv_obj_set_style_bg_opa(top_bar_, LV_OPA_60, 0);
         lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_align(top_bar_, LV_ALIGN_TOP_MID, 0, 0);
+
+        auto* scene = lv_obj_create(screen);
+        lv_obj_set_size(scene, 480, 480);
+        lv_obj_set_style_radius(scene, 0, 0);
+        lv_obj_set_style_border_width(scene, 0, 0);
+        lv_obj_set_style_bg_color(scene, lv_color_hex(0x0B2925), 0);
+        lv_obj_set_style_bg_opa(scene, LV_OPA_COVER, 0);
+        lv_obj_remove_flag(scene, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(scene, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_align(scene, LV_ALIGN_TOP_MID, 0, 0);
+
+        void* background_data = nullptr;
+        size_t background_size = 0;
+        if (Assets::GetInstance().GetAssetData("home_bg_day.png", background_data,
+                                               background_size)) {
+            home_background_ = std::make_unique<LvglRawImage>(background_data, background_size);
+            lv_obj_set_style_bg_image_src(scene, home_background_->image_dsc(), 0);
+            lv_obj_set_style_bg_image_opa(scene, LV_OPA_COVER, 0);
+        }
+        const char* action_assets[] = {
+            "home_menu_cultivate.png",
+            "home_menu_journey.png",
+            "home_menu_claim.png",
+            "home_menu_journal.png",
+        };
+        for (size_t i = 0; i < 4; ++i) {
+            void* action_data = nullptr;
+            size_t action_size = 0;
+            if (Assets::GetInstance().GetAssetData(action_assets[i], action_data, action_size)) {
+                home_action_backgrounds_[i] =
+                    std::make_unique<LvglRawImage>(action_data, action_size);
+            }
+        }
+        lv_obj_move_background(scene);
 
         network_label_ = lv_label_create(top_bar_);
         lv_label_set_text(network_label_, "");
@@ -247,7 +296,10 @@ public:
         pet_title_label_ = lv_label_create(screen);
         lv_label_set_text(pet_title_label_, "随身洞府 · 无名幼灵");
         lv_obj_set_style_text_color(pet_title_label_, lv_color_hex(0xE8C986), 0);
+        lv_label_set_text(pet_title_label_, "炼气三层");
+        lv_obj_set_style_text_font(pet_title_label_, text_font, 0);
         lv_obj_align(pet_title_label_, LV_ALIGN_TOP_MID, 0, 47);
+        lv_obj_align(pet_title_label_, LV_ALIGN_TOP_LEFT, 28, 59);
 
         pet_state_label_ = lv_label_create(screen);
         lv_obj_set_width(pet_state_label_, 380);
@@ -255,7 +307,11 @@ public:
         lv_obj_set_style_text_align(pet_state_label_, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_text(pet_state_label_, "灵宠正在陪伴你");
         lv_obj_set_style_text_color(pet_state_label_, lv_color_hex(0xAFA58F), 0);
+        lv_label_set_text(pet_state_label_, "洞府灵息平稳");
+        lv_obj_set_style_text_color(pet_state_label_, lv_color_hex(0x9FC8BD), 0);
         lv_obj_align(pet_state_label_, LV_ALIGN_TOP_MID, 0, 83);
+        lv_obj_align(pet_state_label_, LV_ALIGN_TOP_LEFT, 28, 86);
+        lv_obj_add_flag(pet_state_label_, LV_OBJ_FLAG_HIDDEN);
         status_label_ = pet_state_label_;
 
         pet_stats_label_ = lv_label_create(screen);
@@ -263,7 +319,29 @@ public:
         lv_label_set_text(pet_stats_label_, "修为 0    精力 100\n心境 50    灵石 0");
         lv_obj_set_style_text_align(pet_stats_label_, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_color(pet_stats_label_, lv_color_hex(0xD7C8A6), 0);
+        lv_obj_set_width(pet_stats_label_, 220);
+        lv_label_set_text(pet_stats_label_, "修为 0 / 100    灵石 0");
+        lv_obj_set_style_text_align(pet_stats_label_, LV_TEXT_ALIGN_LEFT, 0);
         lv_obj_align(pet_stats_label_, LV_ALIGN_TOP_MID, 0, 119);
+        lv_obj_align(pet_stats_label_, LV_ALIGN_TOP_LEFT, 22, 78);
+
+        auto* cultivation_track = lv_obj_create(screen);
+        lv_obj_set_size(cultivation_track, 212, 8);
+        lv_obj_set_style_radius(cultivation_track, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(cultivation_track, 1, 0);
+        lv_obj_set_style_border_color(cultivation_track, lv_color_hex(0xA9935B), 0);
+        lv_obj_set_style_bg_color(cultivation_track, lv_color_hex(0x182A26), 0);
+        lv_obj_set_style_pad_all(cultivation_track, 1, 0);
+        lv_obj_remove_flag(cultivation_track, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(cultivation_track, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_align(cultivation_track, LV_ALIGN_TOP_LEFT, 22, 102);
+
+        auto* cultivation_fill = lv_obj_create(cultivation_track);
+        lv_obj_set_size(cultivation_fill, 92, 4);
+        lv_obj_set_style_radius(cultivation_fill, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(cultivation_fill, 0, 0);
+        lv_obj_set_style_bg_color(cultivation_fill, lv_color_hex(0x65D8C7), 0);
+        lv_obj_align(cultivation_fill, LV_ALIGN_LEFT_MID, 0, 0);
 
         pet_avatar_ = lv_obj_create(screen);
         lv_obj_set_size(pet_avatar_, 138, 138);
@@ -277,23 +355,52 @@ public:
         lv_obj_remove_flag(pet_avatar_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_remove_flag(pet_avatar_, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_align(pet_avatar_, LV_ALIGN_CENTER, 0, -18);
+        lv_obj_set_size(pet_avatar_, 168, 168);
+        lv_obj_set_style_border_width(pet_avatar_, 3, 0);
+        lv_obj_set_style_border_color(pet_avatar_, lv_color_hex(0x7BE2D1), 0);
+        lv_obj_set_style_bg_color(pet_avatar_, lv_color_hex(0x0B3832), 0);
+        lv_obj_set_style_shadow_color(pet_avatar_, lv_color_hex(0x39C5B1), 0);
+        lv_obj_set_style_shadow_width(pet_avatar_, 28, 0);
+        lv_obj_set_style_shadow_opa(pet_avatar_, LV_OPA_50, 0);
+        lv_obj_align(pet_avatar_, LV_ALIGN_CENTER, 0, 0);
+        lv_obj_add_flag(pet_avatar_, LV_OBJ_FLAG_HIDDEN);
 
         pet_face_label_ = lv_label_create(pet_avatar_);
         lv_label_set_text(pet_face_label_, "^     ^\n   w");
         lv_obj_set_style_text_align(pet_face_label_, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_color(pet_face_label_, lv_color_hex(0x473522), 0);
+        lv_label_set_text(pet_face_label_, "洞府\n静候");
+        lv_obj_set_style_text_color(pet_face_label_, lv_color_hex(0xD9F6E8), 0);
         lv_obj_center(pet_face_label_);
+
+        pet_dialog_panel_ = lv_obj_create(screen);
+        lv_obj_set_size(pet_dialog_panel_, 352, 42);
+        lv_obj_set_style_radius(pet_dialog_panel_, 20, 0);
+        lv_obj_set_style_border_width(pet_dialog_panel_, 1, 0);
+        lv_obj_set_style_border_color(pet_dialog_panel_, lv_color_hex(0x7BE2D1), 0);
+        lv_obj_set_style_bg_color(pet_dialog_panel_, lv_color_hex(0x102E2A), 0);
+        lv_obj_set_style_bg_opa(pet_dialog_panel_, LV_OPA_90, 0);
+        lv_obj_remove_flag(pet_dialog_panel_, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(pet_dialog_panel_, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_align(pet_dialog_panel_, LV_ALIGN_CENTER, 0, 106);
 
         pet_dialog_label_ = lv_label_create(screen);
         lv_obj_set_width(pet_dialog_label_, 430);
-        lv_label_set_long_mode(pet_dialog_label_, LV_LABEL_LONG_WRAP);
+        lv_label_set_long_mode(pet_dialog_label_, LV_LABEL_LONG_DOT);
         lv_obj_set_style_text_align(pet_dialog_label_, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_color(pet_dialog_label_, lv_color_hex(0xB8AD98), 0);
+        lv_obj_set_width(pet_dialog_label_, 300);
+        lv_obj_set_style_text_color(pet_dialog_label_, lv_color_hex(0xE4F6EC), 0);
         lv_label_set_text(pet_dialog_label_, "点“对话”或按实体键和我说话");
         lv_obj_align(pet_dialog_label_, LV_ALIGN_CENTER, 0, 76);
+        lv_label_set_text(pet_dialog_label_, "今日灵气甚好。\n可先安排一件修行之事。");
+        lv_label_set_text(pet_dialog_label_, "灵息汇聚，今日可选择修炼、历练或休息。");
+        lv_obj_align(pet_dialog_label_, LV_ALIGN_CENTER, 0, 106);
+        lv_obj_add_flag(pet_dialog_panel_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(pet_dialog_label_, LV_OBJ_FLAG_HIDDEN);
 
         pet_actions_ = lv_obj_create(screen);
-        lv_obj_set_size(pet_actions_, 452, 62);
+        lv_obj_set_size(pet_actions_, 452, 116);
         lv_obj_set_style_bg_opa(pet_actions_, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(pet_actions_, 0, 0);
         lv_obj_set_style_pad_all(pet_actions_, 0, 0);
@@ -304,10 +411,10 @@ public:
         lv_obj_remove_flag(pet_actions_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_remove_flag(pet_actions_, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_align(pet_actions_, LV_ALIGN_BOTTOM_MID, 0, -8);
-        CreateActionButton(pet_actions_, 0, "吐纳", PetAction::kBreathing);
+        CreateActionButton(pet_actions_, 0, "修炼", PetAction::kBreathing);
         CreateActionButton(pet_actions_, 1, "游历", PetAction::kJourney);
-        CreateActionButton(pet_actions_, 2, "领取", PetAction::kClaim);
-        CreateActionButton(pet_actions_, 3, "对话", PetAction::kTalk);
+        CreateActionButton(pet_actions_, 2, "收获", PetAction::kClaim);
+        CreateActionButton(pet_actions_, 3, "札记", PetAction::kTalk);
 
         low_battery_popup_ = lv_obj_create(screen);
         lv_obj_set_size(low_battery_popup_, 420, 52);
@@ -340,12 +447,28 @@ public:
             "\n心境 " + std::to_string(state.mood) +
             "    灵石 " + std::to_string(state.spirit_stones);
         lv_label_set_text(pet_stats_label_, text.c_str());
+        const std::string home_text = "修为 " + std::to_string(state.cultivation) +
+            " / 100    灵石 " + std::to_string(state.spirit_stones);
+        lv_label_set_text(pet_stats_label_, home_text.c_str());
     }
 
     void SetPetDialog(const std::string& text) {
         DisplayLockGuard lock(this);
-        if (pet_dialog_label_ != nullptr) {
-            lv_label_set_text(pet_dialog_label_, text.c_str());
+        if (pet_dialog_label_ != nullptr && pet_dialog_panel_ != nullptr) {
+            if (text.empty()) {
+                lv_obj_add_flag(pet_dialog_panel_, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(pet_dialog_label_, LV_OBJ_FLAG_HIDDEN);
+                return;
+            }
+            std::string single_line = text;
+            for (char& ch : single_line) {
+                if (ch == '\r' || ch == '\n') {
+                    ch = ' ';
+                }
+            }
+            lv_label_set_text(pet_dialog_label_, single_line.c_str());
+            lv_obj_remove_flag(pet_dialog_panel_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(pet_dialog_label_, LV_OBJ_FLAG_HIDDEN);
         }
     }
 
@@ -354,7 +477,7 @@ public:
         if (pet_state_label_ == nullptr || status == nullptr) {
             return;
         }
-        const char* pet_status = status;
+        const char* pet_status = nullptr;
         if (std::strcmp(status, Lang::Strings::STANDBY) == 0) {
             pet_status = "灵宠正在洞府中陪伴你";
         } else if (std::strcmp(status, Lang::Strings::LISTENING) == 0) {
@@ -364,11 +487,25 @@ public:
         } else if (std::strcmp(status, Lang::Strings::CONNECTING) == 0) {
             pet_status = "灵宠正在连接神识";
         }
-        lv_label_set_text(pet_state_label_, pet_status);
+        if (std::strcmp(status, Lang::Strings::STANDBY) == 0) {
+            pet_status = "洞府静候";
+        } else if (std::strcmp(status, Lang::Strings::LISTENING) == 0) {
+            pet_status = "正在聆听";
+        } else if (std::strcmp(status, Lang::Strings::SPEAKING) == 0) {
+            pet_status = "正在回应";
+        } else if (std::strcmp(status, Lang::Strings::CONNECTING) == 0) {
+            pet_status = "神识连接中";
+        }
+        if (pet_status != nullptr) {
+            lv_label_set_text(pet_state_label_, pet_status);
+        }
     }
 
     void SetChatMessage(const char* role, const char* content) override {
         if (pet_dialog_label_ == nullptr || content == nullptr || content[0] == '\0') {
+            return;
+        }
+        if (role != nullptr && std::strcmp(role, "system") == 0) {
             return;
         }
         if (std::strcmp(role, "system") == 0 &&
@@ -389,6 +526,8 @@ public:
 
     void SetEmotion(const char* emotion) override {
         DisplayLockGuard lock(this);
+        (void)emotion;
+        return;
         if (pet_face_label_ == nullptr) {
             return;
         }
