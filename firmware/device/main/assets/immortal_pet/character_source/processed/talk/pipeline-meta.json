@@ -1,0 +1,249 @@
+{
+  "target": "npc",
+  "mode": "talk",
+  "prompt": "",
+  "role": "",
+  "input": "firmware\\device\\main\\assets\\immortal_pet\\character_source\\raw\\celestial_cultivator_talk_2x3_raw.png",
+  "threshold": 100,
+  "edge_threshold": 150,
+  "duration": 200,
+  "rows": 2,
+  "cols": 3,
+  "cell_size": 384,
+  "fit_scale": 0.78,
+  "trim_border": 4,
+  "edge_clean_depth": 3,
+  "align": "feet",
+  "shared_scale": true,
+  "component_mode": "largest",
+  "component_padding": 0,
+  "min_component_area": 1,
+  "edge_touch_margin": 0,
+  "frame_labels": [
+    "talk-1",
+    "talk-2",
+    "talk-3",
+    "talk-4",
+    "talk-5",
+    "talk-6"
+  ],
+  "frames": [
+    {
+      "grid": [
+        0,
+        0
+      ],
+      "source_box": [
+        0,
+        0,
+        418,
+        627
+      ],
+      "component_mode": "largest",
+      "component_count": 5,
+      "selected_component_area": 73950,
+      "selected_component_bbox": [
+        112,
+        39,
+        318,
+        619
+      ],
+      "crop_bbox": [
+        112,
+        39,
+        318,
+        619
+      ],
+      "edge_touch": false,
+      "output_size": [
+        105,
+        297
+      ],
+      "paste_position": [
+        139,
+        45
+      ]
+    },
+    {
+      "grid": [
+        0,
+        1
+      ],
+      "source_box": [
+        418,
+        0,
+        836,
+        627
+      ],
+      "component_mode": "largest",
+      "component_count": 4,
+      "selected_component_area": 73872,
+      "selected_component_bbox": [
+        90,
+        43,
+        296,
+        619
+      ],
+      "crop_bbox": [
+        90,
+        43,
+        296,
+        619
+      ],
+      "edge_touch": false,
+      "output_size": [
+        105,
+        295
+      ],
+      "paste_position": [
+        139,
+        47
+      ]
+    },
+    {
+      "grid": [
+        0,
+        2
+      ],
+      "source_box": [
+        836,
+        0,
+        1254,
+        627
+      ],
+      "component_mode": "largest",
+      "component_count": 8,
+      "selected_component_area": 74405,
+      "selected_component_bbox": [
+        78,
+        40,
+        285,
+        619
+      ],
+      "crop_bbox": [
+        78,
+        40,
+        285,
+        619
+      ],
+      "edge_touch": false,
+      "output_size": [
+        106,
+        297
+      ],
+      "paste_position": [
+        139,
+        45
+      ]
+    },
+    {
+      "grid": [
+        1,
+        0
+      ],
+      "source_box": [
+        0,
+        627,
+        418,
+        1254
+      ],
+      "component_mode": "largest",
+      "component_count": 5,
+      "selected_component_area": 76604,
+      "selected_component_bbox": [
+        111,
+        16,
+        318,
+        599
+      ],
+      "crop_bbox": [
+        111,
+        16,
+        318,
+        599
+      ],
+      "edge_touch": false,
+      "output_size": [
+        106,
+        299
+      ],
+      "paste_position": [
+        139,
+        43
+      ]
+    },
+    {
+      "grid": [
+        1,
+        1
+      ],
+      "source_box": [
+        418,
+        627,
+        836,
+        1254
+      ],
+      "component_mode": "largest",
+      "component_count": 5,
+      "selected_component_area": 74043,
+      "selected_component_bbox": [
+        89,
+        17,
+        296,
+        599
+      ],
+      "crop_bbox": [
+        89,
+        17,
+        296,
+        599
+      ],
+      "edge_touch": false,
+      "output_size": [
+        106,
+        299
+      ],
+      "paste_position": [
+        139,
+        43
+      ]
+    },
+    {
+      "grid": [
+        1,
+        2
+      ],
+      "source_box": [
+        836,
+        627,
+        1254,
+        1254
+      ],
+      "component_mode": "largest",
+      "component_count": 4,
+      "selected_component_area": 73730,
+      "selected_component_bbox": [
+        75,
+        17,
+        281,
+        599
+      ],
+      "crop_bbox": [
+        75,
+        17,
+        281,
+        599
+      ],
+      "edge_touch": false,
+      "output_size": [
+        105,
+        299
+      ],
+      "paste_position": [
+        139,
+        43
+      ]
+    }
+  ],
+  "edge_touch_frames": []
+}

@@ -16,6 +16,7 @@
 
 #include <esp_log.h>
 #include <esp_lcd_panel_vendor.h>
+#include <algorithm>
 #include <driver/i2c_master.h>
 #include <driver/spi_master.h>
 #include <cstring>
@@ -28,6 +29,7 @@
 #include "immortal_pet/game_engine.h"
 #include "display/lvgl_display/lvgl_theme.h"
 #include "display/lvgl_display/lvgl_image.h"
+#include "display/lvgl_display/gif/lvgl_gif.h"
 #include <esp_timer.h>
 #include <memory>
 #include <mutex>
@@ -104,6 +106,14 @@ public:
         kTalk,
     };
 
+    enum class CharacterAnimation : uint8_t {
+        kIdle,
+        kCultivate,
+        kJourney,
+        kClaim,
+        kTalk,
+    };
+
 private:
     struct ActionBinding {
         CustomLcdDisplay* display = nullptr;
@@ -117,22 +127,84 @@ private:
     lv_obj_t* pet_stats_label_ = nullptr;
     lv_obj_t* pet_dialog_panel_ = nullptr;
     lv_obj_t* pet_dialog_label_ = nullptr;
+    lv_obj_t* cultivation_fill_ = nullptr;
     lv_obj_t* pet_avatar_ = nullptr;
     lv_obj_t* pet_face_label_ = nullptr;
+    lv_obj_t* pet_character_image_ = nullptr;
     lv_obj_t* pet_actions_ = nullptr;
     std::unique_ptr<LvglRawImage> home_background_;
     std::unique_ptr<LvglRawImage> home_action_backgrounds_[4];
+    std::unique_ptr<LvglRawImage> character_animations_[5];
+    std::unique_ptr<LvglGif> character_gif_;
+
+    void ApplyHomeStatusBarStyle() {
+        if (top_bar_ != nullptr) {
+            lv_obj_set_style_bg_color(top_bar_, lv_color_hex(0x09211E), 0);
+            lv_obj_set_style_bg_opa(top_bar_, LV_OPA_COVER, 0);
+        }
+        const lv_color_t status_text_color = lv_color_hex(0xE4F6EC);
+        if (network_label_ != nullptr) {
+            lv_obj_set_style_text_color(network_label_, status_text_color, 0);
+        }
+        if (mute_label_ != nullptr) {
+            lv_obj_set_style_text_color(mute_label_, status_text_color, 0);
+        }
+        if (battery_label_ != nullptr) {
+            lv_obj_set_style_text_color(battery_label_, status_text_color, 0);
+        }
+        if (notification_label_ != nullptr) {
+            lv_obj_set_style_text_color(notification_label_, status_text_color, 0);
+        }
+    }
+
+    void PlayCharacterAnimation(CharacterAnimation animation) {
+        const auto index = static_cast<size_t>(animation);
+        if (pet_character_image_ == nullptr || index >= 5 ||
+            character_animations_[index] == nullptr) {
+            return;
+        }
+
+        character_gif_.reset();
+        character_gif_ = std::make_unique<LvglGif>(character_animations_[index]->image_dsc());
+        if (!character_gif_->IsLoaded()) {
+            character_gif_.reset();
+            return;
+        }
+        lv_image_set_src(pet_character_image_, character_gif_->image_dsc());
+        character_gif_->Start();
+    }
+
+    void PlayActionAnimation(PetAction action) {
+        switch (action) {
+            case PetAction::kBreathing:
+                PlayCharacterAnimation(CharacterAnimation::kCultivate);
+                break;
+            case PetAction::kJourney:
+                PlayCharacterAnimation(CharacterAnimation::kJourney);
+                break;
+            case PetAction::kClaim:
+                PlayCharacterAnimation(CharacterAnimation::kClaim);
+                break;
+            case PetAction::kTalk:
+                PlayCharacterAnimation(CharacterAnimation::kTalk);
+                break;
+        }
+    }
 
     static void OnActionClicked(lv_event_t* event) {
         auto* binding = static_cast<ActionBinding*>(lv_event_get_user_data(event));
-        if (binding != nullptr && binding->display->action_handler_) {
+        if (binding == nullptr || binding->display == nullptr) {
+            return;
+        }
+        binding->display->PlayActionAnimation(binding->action);
+        if (binding->display->action_handler_) {
             binding->display->action_handler_(binding->action);
         }
     }
 
     void CreateActionButton(lv_obj_t* parent, int index, const char* label, PetAction action) {
         auto* button = lv_obj_create(parent);
-        lv_obj_set_size(button, 102, 108);
+        lv_obj_set_size(button, 102, 102);
         lv_obj_set_style_radius(button, 20, 0);
         lv_obj_set_style_border_width(button, 2, 0);
         lv_obj_set_style_border_color(button, lv_color_hex(0xE5C97F), 0);
@@ -141,7 +213,8 @@ private:
         if (index >= 0 && index < 4 && home_action_backgrounds_[index] != nullptr) {
             auto* icon = lv_image_create(button);
             lv_image_set_src(icon, home_action_backgrounds_[index]->image_dsc());
-            lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 4);
+            lv_image_set_scale(icon, 342);  // LVGL uses 256 as 100%: 72px asset -> 96px.
+            lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 2);
         }
         lv_obj_set_style_shadow_color(button, lv_color_hex(0x081A18), 0);
         lv_obj_set_style_shadow_width(button, 8, 0);
@@ -175,6 +248,25 @@ public:
         // round the end of coordinate up to the nearest 2N+1 number
         area->x2 = ((x2 >> 1) << 1) + 1;
         area->y2 = ((y2 >> 1) << 1) + 1;
+    }
+
+    static void ReadTouchSafely(lv_indev_t* indev, lv_indev_data_t* data) {
+        data->state = LV_INDEV_STATE_RELEASED;
+        auto touch = static_cast<esp_lcd_touch_handle_t>(lv_indev_get_user_data(indev));
+        if (touch == nullptr || esp_lcd_touch_read_data(touch) != ESP_OK) {
+            return;
+        }
+
+        esp_lcd_touch_point_data_t point{};
+        uint8_t touch_count = 0;
+        if (esp_lcd_touch_get_data(touch, &point, &touch_count, 1) != ESP_OK ||
+            touch_count == 0) {
+            return;
+        }
+
+        data->point.x = point.x;
+        data->point.y = point.y;
+        data->state = LV_INDEV_STATE_PRESSED;
     }
 
     CustomLcdDisplay(esp_lcd_panel_io_handle_t io_handle,
@@ -231,7 +323,7 @@ public:
         lv_obj_set_style_pad_top(top_bar_, 4, 0);
         lv_obj_set_style_pad_bottom(top_bar_, 4, 0);
         lv_obj_set_style_bg_color(top_bar_, lv_color_hex(0x09211E), 0);
-        lv_obj_set_style_bg_opa(top_bar_, LV_OPA_60, 0);
+        lv_obj_set_style_bg_opa(top_bar_, LV_OPA_COVER, 0);
         lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_align(top_bar_, LV_ALIGN_TOP_MID, 0, 0);
@@ -268,6 +360,22 @@ public:
                     std::make_unique<LvglRawImage>(action_data, action_size);
             }
         }
+        const char* character_assets[] = {
+            "home_character_idle.gif",
+            "home_character_cultivate.gif",
+            "home_character_journey.gif",
+            "home_character_claim.gif",
+            "home_character_talk.gif",
+        };
+        for (size_t i = 0; i < 5; ++i) {
+            void* character_data = nullptr;
+            size_t character_size = 0;
+            if (Assets::GetInstance().GetAssetData(character_assets[i], character_data,
+                                                   character_size)) {
+                character_animations_[i] =
+                    std::make_unique<LvglRawImage>(character_data, character_size);
+            }
+        }
         lv_obj_move_background(scene);
 
         network_label_ = lv_label_create(top_bar_);
@@ -292,6 +400,7 @@ public:
         lv_label_set_text(notification_label_, "");
         lv_obj_align(notification_label_, LV_ALIGN_CENTER, 0, 0);
         lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
+        ApplyHomeStatusBarStyle();
 
         pet_title_label_ = lv_label_create(screen);
         lv_label_set_text(pet_title_label_, "随身洞府 · 无名幼灵");
@@ -336,12 +445,12 @@ public:
         lv_obj_remove_flag(cultivation_track, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_align(cultivation_track, LV_ALIGN_TOP_LEFT, 22, 102);
 
-        auto* cultivation_fill = lv_obj_create(cultivation_track);
-        lv_obj_set_size(cultivation_fill, 92, 4);
-        lv_obj_set_style_radius(cultivation_fill, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_border_width(cultivation_fill, 0, 0);
-        lv_obj_set_style_bg_color(cultivation_fill, lv_color_hex(0x65D8C7), 0);
-        lv_obj_align(cultivation_fill, LV_ALIGN_LEFT_MID, 0, 0);
+        cultivation_fill_ = lv_obj_create(cultivation_track);
+        lv_obj_set_size(cultivation_fill_, 1, 4);
+        lv_obj_set_style_radius(cultivation_fill_, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(cultivation_fill_, 0, 0);
+        lv_obj_set_style_bg_color(cultivation_fill_, lv_color_hex(0x65D8C7), 0);
+        lv_obj_align(cultivation_fill_, LV_ALIGN_LEFT_MID, 0, 0);
 
         pet_avatar_ = lv_obj_create(screen);
         lv_obj_set_size(pet_avatar_, 138, 138);
@@ -372,6 +481,13 @@ public:
         lv_label_set_text(pet_face_label_, "洞府\n静候");
         lv_obj_set_style_text_color(pet_face_label_, lv_color_hex(0xD9F6E8), 0);
         lv_obj_center(pet_face_label_);
+
+        pet_character_image_ = lv_image_create(screen);
+        lv_obj_set_size(pet_character_image_, 384, 384);
+        lv_obj_remove_flag(pet_character_image_, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(pet_character_image_, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_align(pet_character_image_, LV_ALIGN_CENTER, 78, -40);
+        PlayCharacterAnimation(CharacterAnimation::kIdle);
 
         pet_dialog_panel_ = lv_obj_create(screen);
         lv_obj_set_size(pet_dialog_panel_, 352, 42);
@@ -432,6 +548,58 @@ public:
 #endif
     }
 
+    void SetTheme(Theme* theme) override {
+#if CONFIG_IMMORTAL_PET_V2
+        DisplayLockGuard lock(this);
+        auto* home_theme = dynamic_cast<LvglTheme*>(theme);
+        if (home_theme == nullptr || home_theme->text_font() == nullptr ||
+            home_theme->icon_font() == nullptr) {
+            return;
+        }
+
+        // SetTextFont() replaces and releases the previous font owner after this call.
+        // Rebind all homepage text before that happens; otherwise LVGL later executes a
+        // stale font callback while refreshing the screen.
+        const lv_font_t* text_font = home_theme->text_font()->font();
+        const lv_font_t* icon_font = home_theme->icon_font()->font();
+        if (text_font == nullptr || icon_font == nullptr) {
+            return;
+        }
+        lv_obj_set_style_text_font(lv_screen_active(), text_font, 0);
+        if (pet_title_label_ != nullptr) {
+            lv_obj_set_style_text_font(pet_title_label_, text_font, 0);
+        }
+        if (pet_state_label_ != nullptr) {
+            lv_obj_set_style_text_font(pet_state_label_, text_font, 0);
+        }
+        if (pet_stats_label_ != nullptr) {
+            lv_obj_set_style_text_font(pet_stats_label_, text_font, 0);
+        }
+        if (pet_dialog_label_ != nullptr) {
+            lv_obj_set_style_text_font(pet_dialog_label_, text_font, 0);
+        }
+        if (pet_face_label_ != nullptr) {
+            lv_obj_set_style_text_font(pet_face_label_, text_font, 0);
+        }
+        if (network_label_ != nullptr) {
+            lv_obj_set_style_text_font(network_label_, icon_font, 0);
+        }
+        if (mute_label_ != nullptr) {
+            lv_obj_set_style_text_font(mute_label_, icon_font, 0);
+        }
+        if (battery_label_ != nullptr) {
+            lv_obj_set_style_text_font(battery_label_, icon_font, 0);
+        }
+
+        // The generic LCD implementation recolors the status bar using the global theme.
+        // This screen owns its full visual design, so preserve its explicit contrast instead.
+        Display::SetTheme(theme);
+        ApplyHomeStatusBarStyle();
+#else
+        SpiLcdDisplay::SetTheme(theme);
+#endif
+    }
+
 #if CONFIG_IMMORTAL_PET_V2
     void SetActionHandler(std::function<void(PetAction)> handler) {
         action_handler_ = std::move(handler);
@@ -450,6 +618,14 @@ public:
         const std::string home_text = "修为 " + std::to_string(state.cultivation) +
             " / 100    灵石 " + std::to_string(state.spirit_stones);
         lv_label_set_text(pet_stats_label_, home_text.c_str());
+        if (cultivation_fill_ != nullptr) {
+            constexpr uint32_t kCultivationCap = 100;
+            constexpr int32_t kTrackInnerWidth = 210;
+            const uint32_t cultivation = std::min(state.cultivation, kCultivationCap);
+            const int32_t fill_width = std::max<int32_t>(1, static_cast<int32_t>(
+                (cultivation * kTrackInnerWidth) / kCultivationCap));
+            lv_obj_set_width(cultivation_fill_, fill_width);
+        }
     }
 
     void SetPetDialog(const std::string& text) {
@@ -789,7 +965,13 @@ private:
             .disp = lv_display_get_default(),
             .handle = tp,
         };
-        lvgl_port_add_touch(&touch_cfg);
+        lv_indev_t* touch_indev = lvgl_port_add_touch(&touch_cfg);
+        if (touch_indev != nullptr) {
+            // A malformed CST9217 reply is transient.  The LVGL9 port treats it as fatal;
+            // report an idle frame instead so one bad I2C read cannot reboot the device.
+            lv_indev_set_user_data(touch_indev, tp);
+            lv_indev_set_read_cb(touch_indev, CustomLcdDisplay::ReadTouchSafely);
+        }
         ESP_LOGI(TAG, "Touch panel initialized successfully");
     }
 
