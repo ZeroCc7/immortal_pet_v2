@@ -34,6 +34,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 #endif
 
 #include <esp_lcd_touch_cst9217.h>
@@ -125,6 +126,7 @@ private:
     lv_obj_t* pet_title_label_ = nullptr;
     lv_obj_t* pet_state_label_ = nullptr;
     lv_obj_t* pet_stats_label_ = nullptr;
+    lv_obj_t* pet_hud_panel_ = nullptr;
     lv_obj_t* pet_dialog_panel_ = nullptr;
     lv_obj_t* pet_dialog_label_ = nullptr;
     lv_obj_t* cultivation_fill_ = nullptr;
@@ -134,13 +136,69 @@ private:
     lv_obj_t* pet_actions_ = nullptr;
     std::unique_ptr<LvglRawImage> home_background_;
     std::unique_ptr<LvglRawImage> home_action_backgrounds_[4];
+    std::unique_ptr<LvglRawImage> home_hud_badge_;
+    std::unique_ptr<LvglRawImage> home_dialog_background_;
     std::unique_ptr<LvglRawImage> character_animations_[5];
     std::unique_ptr<LvglGif> character_gif_;
+    std::vector<std::string> pet_dialog_pages_;
+    size_t pet_dialog_page_index_ = 0;
+    lv_timer_t* pet_dialog_timer_ = nullptr;
+    lv_timer_t* pet_dialog_hide_timer_ = nullptr;
+
+    static size_t Utf8PageEnd(const std::string& text, size_t start, size_t max_chars) {
+        size_t offset = start;
+        size_t chars = 0;
+        while (offset < text.size() && chars < max_chars) {
+            const unsigned char byte = static_cast<unsigned char>(text[offset]);
+            size_t width = 1;
+            if ((byte & 0xF0) == 0xF0) {
+                width = 4;
+            } else if ((byte & 0xE0) == 0xE0) {
+                width = 3;
+            } else if ((byte & 0xC0) == 0xC0) {
+                width = 2;
+            }
+            offset = std::min(offset + width, text.size());
+            ++chars;
+        }
+        return offset;
+    }
+
+    void ShowDialogPage() {
+        if (pet_dialog_label_ == nullptr || pet_dialog_page_index_ >= pet_dialog_pages_.size()) {
+            return;
+        }
+        lv_label_set_text(pet_dialog_label_, pet_dialog_pages_[pet_dialog_page_index_].c_str());
+    }
+
+    static void AdvanceDialogPage(lv_timer_t* timer) {
+        auto* display = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
+        if (display == nullptr || display->pet_dialog_page_index_ + 1 >=
+                                      display->pet_dialog_pages_.size()) {
+            lv_timer_pause(timer);
+            return;
+        }
+        ++display->pet_dialog_page_index_;
+        display->ShowDialogPage();
+        if (display->pet_dialog_hide_timer_ != nullptr) {
+            lv_timer_reset(display->pet_dialog_hide_timer_);
+        }
+    }
+
+    static void HideDialog(lv_timer_t* timer) {
+        auto* display = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
+        if (display == nullptr || display->pet_dialog_panel_ == nullptr ||
+            display->pet_dialog_label_ == nullptr) {
+            return;
+        }
+        lv_obj_add_flag(display->pet_dialog_panel_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(display->pet_dialog_label_, LV_OBJ_FLAG_HIDDEN);
+        lv_timer_pause(timer);
+    }
 
     void ApplyHomeStatusBarStyle() {
         if (top_bar_ != nullptr) {
-            lv_obj_set_style_bg_color(top_bar_, lv_color_hex(0x09211E), 0);
-            lv_obj_set_style_bg_opa(top_bar_, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_opa(top_bar_, LV_OPA_TRANSP, 0);
         }
         const lv_color_t status_text_color = lv_color_hex(0xE4F6EC);
         if (network_label_ != nullptr) {
@@ -171,6 +229,11 @@ private:
             return;
         }
         lv_image_set_src(pet_character_image_, character_gif_->image_dsc());
+        character_gif_->SetFrameCallback([this]() {
+            if (pet_character_image_ != nullptr && character_gif_ != nullptr) {
+                lv_image_set_src(pet_character_image_, character_gif_->image_dsc());
+            }
+        });
         character_gif_->Start();
     }
 
@@ -191,11 +254,29 @@ private:
         }
     }
 
+    // This callback runs on LVGL's UI task, which already owns the display lock.
+    void ShowActionFeedback(const char* text) {
+        if (pet_dialog_label_ == nullptr || pet_dialog_panel_ == nullptr || text == nullptr) {
+            return;
+        }
+        if (pet_dialog_timer_ != nullptr) {
+            lv_timer_pause(pet_dialog_timer_);
+        }
+        if (pet_dialog_hide_timer_ != nullptr) {
+            lv_timer_reset(pet_dialog_hide_timer_);
+            lv_timer_resume(pet_dialog_hide_timer_);
+        }
+        lv_label_set_text(pet_dialog_label_, text);
+        lv_obj_remove_flag(pet_dialog_panel_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(pet_dialog_label_, LV_OBJ_FLAG_HIDDEN);
+    }
+
     static void OnActionClicked(lv_event_t* event) {
         auto* binding = static_cast<ActionBinding*>(lv_event_get_user_data(event));
         if (binding == nullptr || binding->display == nullptr) {
             return;
         }
+        ESP_LOGI(TAG, "Homepage action selected: %d", static_cast<int>(binding->action));
         binding->display->PlayActionAnimation(binding->action);
         if (binding->display->action_handler_) {
             binding->display->action_handler_(binding->action);
@@ -204,21 +285,17 @@ private:
 
     void CreateActionButton(lv_obj_t* parent, int index, const char* label, PetAction action) {
         auto* button = lv_obj_create(parent);
-        lv_obj_set_size(button, 102, 102);
-        lv_obj_set_style_radius(button, 20, 0);
-        lv_obj_set_style_border_width(button, 2, 0);
-        lv_obj_set_style_border_color(button, lv_color_hex(0xE5C97F), 0);
-        lv_obj_set_style_bg_color(button, lv_color_hex(0x164D45), 0);
-        lv_obj_set_style_bg_color(button, lv_color_hex(0x277769), LV_STATE_PRESSED);
+        lv_obj_set_size(button, 108, 118);
+        lv_obj_set_style_radius(button, 0, 0);
+        lv_obj_set_style_border_width(button, 0, 0);
+        lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
         if (index >= 0 && index < 4 && home_action_backgrounds_[index] != nullptr) {
             auto* icon = lv_image_create(button);
             lv_image_set_src(icon, home_action_backgrounds_[index]->image_dsc());
-            lv_image_set_scale(icon, 342);  // LVGL uses 256 as 100%: 72px asset -> 96px.
-            lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 2);
+            // 160px source scaled to 108px: keep the full card inside its touch target.
+            lv_image_set_scale(icon, 173);
+            lv_obj_center(icon);
         }
-        lv_obj_set_style_shadow_color(button, lv_color_hex(0x081A18), 0);
-        lv_obj_set_style_shadow_width(button, 8, 0);
-        lv_obj_set_style_shadow_opa(button, LV_OPA_40, 0);
         lv_obj_set_style_pad_all(button, 0, 0);
         lv_obj_remove_flag(button, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
@@ -226,7 +303,8 @@ private:
         auto* text = lv_label_create(button);
         lv_label_set_text(text, label);
         lv_obj_set_style_text_color(text, lv_color_hex(0xFFF0C9), 0);
-        lv_obj_align(text, LV_ALIGN_BOTTOM_MID, 0, -7);
+        lv_obj_align(text, LV_ALIGN_BOTTOM_MID, 0, -5);
+        lv_obj_add_flag(text, LV_OBJ_FLAG_HIDDEN);
 
         action_bindings_[index] = {this, action};
         lv_obj_add_event_cb(button, OnActionClicked, LV_EVENT_CLICKED, &action_bindings_[index]);
@@ -315,18 +393,17 @@ public:
         lv_obj_remove_flag(container_, LV_OBJ_FLAG_CLICKABLE);
 
         top_bar_ = lv_obj_create(screen);
-        lv_obj_set_size(top_bar_, 480, 40);
+        lv_obj_set_size(top_bar_, 132, 28);
         lv_obj_set_style_radius(top_bar_, 0, 0);
         lv_obj_set_style_border_width(top_bar_, 0, 0);
-        lv_obj_set_style_pad_left(top_bar_, 14, 0);
-        lv_obj_set_style_pad_right(top_bar_, 14, 0);
-        lv_obj_set_style_pad_top(top_bar_, 4, 0);
-        lv_obj_set_style_pad_bottom(top_bar_, 4, 0);
-        lv_obj_set_style_bg_color(top_bar_, lv_color_hex(0x09211E), 0);
-        lv_obj_set_style_bg_opa(top_bar_, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_left(top_bar_, 12, 0);
+        lv_obj_set_style_pad_right(top_bar_, 12, 0);
+        lv_obj_set_style_pad_top(top_bar_, 0, 0);
+        lv_obj_set_style_pad_bottom(top_bar_, 0, 0);
+        lv_obj_set_style_bg_opa(top_bar_, LV_OPA_TRANSP, 0);
         lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(top_bar_, LV_ALIGN_TOP_MID, 0, 0);
+        lv_obj_align(top_bar_, LV_ALIGN_TOP_RIGHT, -18, 14);
 
         auto* scene = lv_obj_create(screen);
         lv_obj_set_size(scene, 480, 480);
@@ -344,13 +421,13 @@ public:
                                                background_size)) {
             home_background_ = std::make_unique<LvglRawImage>(background_data, background_size);
             lv_obj_set_style_bg_image_src(scene, home_background_->image_dsc(), 0);
-            lv_obj_set_style_bg_image_opa(scene, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_image_opa(scene, LV_OPA_60, 0);
         }
         const char* action_assets[] = {
-            "home_menu_cultivate.png",
-            "home_menu_journey.png",
-            "home_menu_claim.png",
-            "home_menu_journal.png",
+            "home_menu_cultivate_v2.png",
+            "home_menu_journey_v2.png",
+            "home_menu_claim_v2.png",
+            "home_menu_journal_v2.png",
         };
         for (size_t i = 0; i < 4; ++i) {
             void* action_data = nullptr;
@@ -359,6 +436,19 @@ public:
                 home_action_backgrounds_[i] =
                     std::make_unique<LvglRawImage>(action_data, action_size);
             }
+        }
+        void* hud_badge_data = nullptr;
+        size_t hud_badge_size = 0;
+        if (Assets::GetInstance().GetAssetData("home_hud_badge_v2.png", hud_badge_data,
+                                               hud_badge_size)) {
+            home_hud_badge_ = std::make_unique<LvglRawImage>(hud_badge_data, hud_badge_size);
+        }
+        void* dialog_background_data = nullptr;
+        size_t dialog_background_size = 0;
+        if (Assets::GetInstance().GetAssetData("home_dialog_bubble_v2.png", dialog_background_data,
+                                               dialog_background_size)) {
+            home_dialog_background_ =
+                std::make_unique<LvglRawImage>(dialog_background_data, dialog_background_size);
         }
         const char* character_assets[] = {
             "home_character_idle.gif",
@@ -386,7 +476,7 @@ public:
         mute_label_ = lv_label_create(top_bar_);
         lv_label_set_text(mute_label_, "");
         lv_obj_set_style_text_font(mute_label_, icon_font, 0);
-        lv_obj_align(mute_label_, LV_ALIGN_RIGHT_MID, -36, 0);
+        lv_obj_align(mute_label_, LV_ALIGN_RIGHT_MID, -42, 0);
 
         battery_label_ = lv_label_create(top_bar_);
         lv_label_set_text(battery_label_, "");
@@ -394,7 +484,7 @@ public:
         lv_obj_align(battery_label_, LV_ALIGN_RIGHT_MID, 0, 0);
 
         notification_label_ = lv_label_create(top_bar_);
-        lv_obj_set_width(notification_label_, 310);
+        lv_obj_set_width(notification_label_, 0);
         lv_label_set_long_mode(notification_label_, LV_LABEL_LONG_DOT);
         lv_obj_set_style_text_align(notification_label_, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_text(notification_label_, "");
@@ -402,37 +492,51 @@ public:
         lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
         ApplyHomeStatusBarStyle();
 
-        pet_title_label_ = lv_label_create(screen);
+        pet_hud_panel_ = lv_obj_create(screen);
+        lv_obj_set_size(pet_hud_panel_, 220, 74);
+        lv_obj_set_style_radius(pet_hud_panel_, 0, 0);
+        lv_obj_set_style_border_width(pet_hud_panel_, 0, 0);
+        lv_obj_set_style_bg_opa(pet_hud_panel_, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_all(pet_hud_panel_, 0, 0);
+        lv_obj_remove_flag(pet_hud_panel_, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(pet_hud_panel_, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_align(pet_hud_panel_, LV_ALIGN_TOP_LEFT, 18, 16);
+        if (home_hud_badge_ != nullptr) {
+            auto* badge = lv_image_create(pet_hud_panel_);
+            lv_image_set_src(badge, home_hud_badge_->image_dsc());
+            lv_obj_align(badge, LV_ALIGN_LEFT_MID, 0, 0);
+        }
+
+        pet_title_label_ = lv_label_create(pet_hud_panel_);
         lv_label_set_text(pet_title_label_, "随身洞府 · 无名幼灵");
         lv_obj_set_style_text_color(pet_title_label_, lv_color_hex(0xE8C986), 0);
         lv_label_set_text(pet_title_label_, "炼气三层");
         lv_obj_set_style_text_font(pet_title_label_, text_font, 0);
-        lv_obj_align(pet_title_label_, LV_ALIGN_TOP_MID, 0, 47);
-        lv_obj_align(pet_title_label_, LV_ALIGN_TOP_LEFT, 28, 59);
+        lv_obj_set_style_transform_scale(pet_title_label_, 190, 0);
+        lv_obj_align(pet_title_label_, LV_ALIGN_TOP_LEFT, 76, 2);
 
-        pet_state_label_ = lv_label_create(screen);
-        lv_obj_set_width(pet_state_label_, 380);
+        pet_state_label_ = lv_label_create(pet_hud_panel_);
+        lv_obj_set_width(pet_state_label_, 132);
         lv_label_set_long_mode(pet_state_label_, LV_LABEL_LONG_DOT);
-        lv_obj_set_style_text_align(pet_state_label_, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_align(pet_state_label_, LV_TEXT_ALIGN_LEFT, 0);
         lv_label_set_text(pet_state_label_, "灵宠正在陪伴你");
         lv_obj_set_style_text_color(pet_state_label_, lv_color_hex(0xAFA58F), 0);
         lv_label_set_text(pet_state_label_, "洞府灵息平稳");
         lv_obj_set_style_text_color(pet_state_label_, lv_color_hex(0x9FC8BD), 0);
-        lv_obj_align(pet_state_label_, LV_ALIGN_TOP_MID, 0, 83);
-        lv_obj_align(pet_state_label_, LV_ALIGN_TOP_LEFT, 28, 86);
-        lv_obj_add_flag(pet_state_label_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_transform_scale(pet_state_label_, 185, 0);
+        lv_obj_align(pet_state_label_, LV_ALIGN_TOP_LEFT, 76, 52);
         status_label_ = pet_state_label_;
 
-        pet_stats_label_ = lv_label_create(screen);
+        pet_stats_label_ = lv_label_create(pet_hud_panel_);
         lv_obj_set_width(pet_stats_label_, 390);
         lv_label_set_text(pet_stats_label_, "修为 0    精力 100\n心境 50    灵石 0");
         lv_obj_set_style_text_align(pet_stats_label_, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_color(pet_stats_label_, lv_color_hex(0xD7C8A6), 0);
         lv_obj_set_width(pet_stats_label_, 220);
-        lv_label_set_text(pet_stats_label_, "修为 0 / 100    灵石 0");
+        lv_label_set_text(pet_stats_label_, "0 / 100        0");
         lv_obj_set_style_text_align(pet_stats_label_, LV_TEXT_ALIGN_LEFT, 0);
-        lv_obj_align(pet_stats_label_, LV_ALIGN_TOP_MID, 0, 119);
-        lv_obj_align(pet_stats_label_, LV_ALIGN_TOP_LEFT, 22, 78);
+        lv_obj_align(pet_stats_label_, LV_ALIGN_TOP_LEFT, 26, 34);
+        lv_obj_add_flag(pet_stats_label_, LV_OBJ_FLAG_HIDDEN);
 
         auto* cultivation_track = lv_obj_create(screen);
         lv_obj_set_size(cultivation_track, 212, 8);
@@ -443,7 +547,9 @@ public:
         lv_obj_set_style_pad_all(cultivation_track, 1, 0);
         lv_obj_remove_flag(cultivation_track, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_remove_flag(cultivation_track, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(cultivation_track, LV_ALIGN_TOP_LEFT, 22, 102);
+        lv_obj_set_parent(cultivation_track, pet_hud_panel_);
+        lv_obj_set_size(cultivation_track, 132, 7);
+        lv_obj_align(cultivation_track, LV_ALIGN_TOP_LEFT, 76, 38);
 
         cultivation_fill_ = lv_obj_create(cultivation_track);
         lv_obj_set_size(cultivation_fill_, 1, 4);
@@ -483,40 +589,46 @@ public:
         lv_obj_center(pet_face_label_);
 
         pet_character_image_ = lv_image_create(screen);
-        lv_obj_set_size(pet_character_image_, 384, 384);
+        lv_obj_set_size(pet_character_image_, 300, 300);
+        lv_image_set_scale(pet_character_image_, 205);
         lv_obj_remove_flag(pet_character_image_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_remove_flag(pet_character_image_, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(pet_character_image_, LV_ALIGN_CENTER, 78, -40);
+        lv_obj_align(pet_character_image_, LV_ALIGN_CENTER, -70, -8);
         PlayCharacterAnimation(CharacterAnimation::kIdle);
 
         pet_dialog_panel_ = lv_obj_create(screen);
-        lv_obj_set_size(pet_dialog_panel_, 352, 42);
-        lv_obj_set_style_radius(pet_dialog_panel_, 20, 0);
-        lv_obj_set_style_border_width(pet_dialog_panel_, 1, 0);
-        lv_obj_set_style_border_color(pet_dialog_panel_, lv_color_hex(0x7BE2D1), 0);
-        lv_obj_set_style_bg_color(pet_dialog_panel_, lv_color_hex(0x102E2A), 0);
-        lv_obj_set_style_bg_opa(pet_dialog_panel_, LV_OPA_90, 0);
+        lv_obj_set_size(pet_dialog_panel_, 404, 86);
+        lv_obj_set_style_radius(pet_dialog_panel_, 0, 0);
+        lv_obj_set_style_border_width(pet_dialog_panel_, 0, 0);
+        lv_obj_set_style_bg_opa(pet_dialog_panel_, LV_OPA_TRANSP, 0);
+        if (home_dialog_background_ != nullptr) {
+            lv_obj_set_style_bg_image_src(pet_dialog_panel_, home_dialog_background_->image_dsc(), 0);
+            lv_obj_set_style_bg_image_opa(pet_dialog_panel_, LV_OPA_COVER, 0);
+        }
         lv_obj_remove_flag(pet_dialog_panel_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_remove_flag(pet_dialog_panel_, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(pet_dialog_panel_, LV_ALIGN_CENTER, 0, 106);
+        lv_obj_align(pet_dialog_panel_, LV_ALIGN_TOP_RIGHT, -12, 108);
 
-        pet_dialog_label_ = lv_label_create(screen);
-        lv_obj_set_width(pet_dialog_label_, 430);
-        lv_label_set_long_mode(pet_dialog_label_, LV_LABEL_LONG_DOT);
+        pet_dialog_label_ = lv_label_create(pet_dialog_panel_);
+        lv_obj_set_size(pet_dialog_label_, 280, 46);
+        lv_label_set_long_mode(pet_dialog_label_, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_align(pet_dialog_label_, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_color(pet_dialog_label_, lv_color_hex(0xB8AD98), 0);
-        lv_obj_set_width(pet_dialog_label_, 300);
-        lv_obj_set_style_text_color(pet_dialog_label_, lv_color_hex(0xE4F6EC), 0);
+        lv_obj_set_style_text_color(pet_dialog_label_, lv_color_hex(0x29413A), 0);
         lv_label_set_text(pet_dialog_label_, "点“对话”或按实体键和我说话");
         lv_obj_align(pet_dialog_label_, LV_ALIGN_CENTER, 0, 76);
         lv_label_set_text(pet_dialog_label_, "今日灵气甚好。\n可先安排一件修行之事。");
         lv_label_set_text(pet_dialog_label_, "灵息汇聚，今日可选择修炼、历练或休息。");
-        lv_obj_align(pet_dialog_label_, LV_ALIGN_CENTER, 0, 106);
+        lv_obj_center(pet_dialog_label_);
+        pet_dialog_timer_ = lv_timer_create(AdvanceDialogPage, 1500, this);
+        lv_timer_pause(pet_dialog_timer_);
+        pet_dialog_hide_timer_ = lv_timer_create(HideDialog, 6000, this);
+        lv_timer_pause(pet_dialog_hide_timer_);
         lv_obj_add_flag(pet_dialog_panel_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(pet_dialog_label_, LV_OBJ_FLAG_HIDDEN);
 
         pet_actions_ = lv_obj_create(screen);
-        lv_obj_set_size(pet_actions_, 452, 116);
+        lv_obj_set_size(pet_actions_, 456, 118);
         lv_obj_set_style_bg_opa(pet_actions_, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(pet_actions_, 0, 0);
         lv_obj_set_style_pad_all(pet_actions_, 0, 0);
@@ -526,7 +638,8 @@ public:
                               LV_FLEX_ALIGN_CENTER);
         lv_obj_remove_flag(pet_actions_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_remove_flag(pet_actions_, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(pet_actions_, LV_ALIGN_BOTTOM_MID, 0, -8);
+        // Keep the whole 4-card row inside the AMOLED rounded-corner safe area.
+        lv_obj_align(pet_actions_, LV_ALIGN_BOTTOM_MID, 0, -32);
         CreateActionButton(pet_actions_, 0, "修炼", PetAction::kBreathing);
         CreateActionButton(pet_actions_, 1, "游历", PetAction::kJourney);
         CreateActionButton(pet_actions_, 2, "收获", PetAction::kClaim);
@@ -615,12 +728,12 @@ public:
             "\n心境 " + std::to_string(state.mood) +
             "    灵石 " + std::to_string(state.spirit_stones);
         lv_label_set_text(pet_stats_label_, text.c_str());
-        const std::string home_text = "修为 " + std::to_string(state.cultivation) +
-            " / 100    灵石 " + std::to_string(state.spirit_stones);
+        const std::string home_text = std::to_string(state.cultivation) +
+            " / 100        " + std::to_string(state.spirit_stones);
         lv_label_set_text(pet_stats_label_, home_text.c_str());
         if (cultivation_fill_ != nullptr) {
             constexpr uint32_t kCultivationCap = 100;
-            constexpr int32_t kTrackInnerWidth = 210;
+            constexpr int32_t kTrackInnerWidth = 130;
             const uint32_t cultivation = std::min(state.cultivation, kCultivationCap);
             const int32_t fill_width = std::max<int32_t>(1, static_cast<int32_t>(
                 (cultivation * kTrackInnerWidth) / kCultivationCap));
@@ -632,6 +745,14 @@ public:
         DisplayLockGuard lock(this);
         if (pet_dialog_label_ != nullptr && pet_dialog_panel_ != nullptr) {
             if (text.empty()) {
+                pet_dialog_pages_.clear();
+                pet_dialog_page_index_ = 0;
+                if (pet_dialog_timer_ != nullptr) {
+                    lv_timer_pause(pet_dialog_timer_);
+                }
+                if (pet_dialog_hide_timer_ != nullptr) {
+                    lv_timer_pause(pet_dialog_hide_timer_);
+                }
                 lv_obj_add_flag(pet_dialog_panel_, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_add_flag(pet_dialog_label_, LV_OBJ_FLAG_HIDDEN);
                 return;
@@ -642,7 +763,25 @@ public:
                     ch = ' ';
                 }
             }
-            lv_label_set_text(pet_dialog_label_, single_line.c_str());
+            pet_dialog_pages_.clear();
+            for (size_t start = 0; start < single_line.size();) {
+                const size_t end = Utf8PageEnd(single_line, start, 28);
+                pet_dialog_pages_.push_back(single_line.substr(start, end - start));
+                start = end;
+            }
+            pet_dialog_page_index_ = 0;
+            ShowDialogPage();
+            if (pet_dialog_timer_ != nullptr) {
+                if (pet_dialog_pages_.size() > 1) {
+                    lv_timer_resume(pet_dialog_timer_);
+                } else {
+                    lv_timer_pause(pet_dialog_timer_);
+                }
+            }
+            if (pet_dialog_hide_timer_ != nullptr) {
+                lv_timer_reset(pet_dialog_hide_timer_);
+                lv_timer_resume(pet_dialog_hide_timer_);
+            }
             lv_obj_remove_flag(pet_dialog_panel_, LV_OBJ_FLAG_HIDDEN);
             lv_obj_remove_flag(pet_dialog_label_, LV_OBJ_FLAG_HIDDEN);
         }
@@ -689,10 +828,11 @@ public:
             return;
         }
         std::string message;
+        if (std::strcmp(role, "user") == 0) {
+            return;
+        }
         if (std::strcmp(role, "assistant") == 0) {
             message = "灵宠：";
-        } else if (std::strcmp(role, "user") == 0) {
-            message = "你：";
         } else {
             message = "提示：";
         }
@@ -777,12 +917,11 @@ private:
     }
 
     void HandlePetAction(CustomLcdDisplay::PetAction action) {
-        if (action == CustomLcdDisplay::PetAction::kTalk) {
-            Application::GetInstance().ToggleChatState();
-            return;
-        }
-
         Application::GetInstance().Schedule([this, action]() {
+            if (action == CustomLcdDisplay::PetAction::kTalk) {
+                Application::GetInstance().ToggleChatState();
+                return;
+            }
             std::lock_guard<std::mutex> lock(game_mutex_);
             const int64_t now = GameNowSeconds();
             game_engine_.Tick(now);
@@ -950,9 +1089,9 @@ private:
                 .interrupt = 0,
             },
             .flags = {
-                .swap_xy = 0,
-                .mirror_x = 1,
-                .mirror_y = 1,
+                .swap_xy = DISPLAY_SWAP_XY,
+                .mirror_x = DISPLAY_MIRROR_X,
+                .mirror_y = DISPLAY_MIRROR_Y,
             },
         };
         esp_lcd_panel_io_handle_t tp_io_handle = NULL;

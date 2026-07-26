@@ -3,6 +3,9 @@
   "files.exclude": {
     "third_party/xiaozhi-esp32": true
   },
-  "cmake.sourceDirectory": "E:/WorkSpace/Zerocc/Private/immortal_pet_v2/firmware/device",
-  "idf.currentSetup": "D:\\APP\\esp\\v6.0.2\\v6.0.2\\esp-idf"
+  "idf.currentSetup": "G:\\app\\ESP-IDF\\v6.0.2\\esp-idf",
+  "idf.openOcdConfigs": [
+    "board/esp32s3-builtin.cfg"
+  ],
+  "cmake.sourceDirectory": "G:/code/immortal_pet_v2/firmware/device"
 }
