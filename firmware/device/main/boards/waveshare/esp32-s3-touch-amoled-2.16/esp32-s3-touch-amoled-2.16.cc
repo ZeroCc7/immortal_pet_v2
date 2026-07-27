@@ -31,6 +31,7 @@
 #include "display/lvgl_display/lvgl_theme.h"
 #include "display/lvgl_display/lvgl_image.h"
 #include "display/lvgl_display/gif/lvgl_gif.h"
+#include "material_symbols.h"
 #include <array>
 #include <esp_timer.h>
 #include <esp_vfs_fat.h>
@@ -452,7 +453,7 @@ public:
         lv_obj_remove_flag(container_, LV_OBJ_FLAG_CLICKABLE);
 
         top_bar_ = lv_obj_create(screen);
-        lv_obj_set_size(top_bar_, 132, 28);
+        lv_obj_set_size(top_bar_, 150, 28);
         lv_obj_set_style_radius(top_bar_, 0, 0);
         lv_obj_set_style_border_width(top_bar_, 0, 0);
         lv_obj_set_style_pad_left(top_bar_, 12, 0);
@@ -545,26 +546,17 @@ public:
         mute_label_ = lv_label_create(top_bar_);
         lv_label_set_text(mute_label_, "");
         lv_obj_set_style_text_font(mute_label_, icon_font, 0);
-        lv_obj_align(mute_label_, LV_ALIGN_RIGHT_MID, -42, 0);
+        lv_obj_align(mute_label_, LV_ALIGN_RIGHT_MID, -82, 0);
 
         battery_label_ = lv_label_create(top_bar_);
         lv_label_set_text(battery_label_, "");
         lv_obj_set_style_text_font(battery_label_, icon_font, 0);
         lv_obj_align(battery_label_, LV_ALIGN_RIGHT_MID, 0, 0);
 
-        tf_card_label_ = lv_label_create(screen);
-        lv_label_set_text(tf_card_label_, "TF");
-        lv_obj_set_style_text_font(tf_card_label_, text_font, 0);
-        lv_obj_set_size(tf_card_label_, 36, 20);
-        lv_obj_set_style_text_align(tf_card_label_, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_text_color(tf_card_label_, lv_color_hex(0xE4F6EC), 0);
-        lv_obj_set_style_bg_color(tf_card_label_, lv_color_hex(0x164D45), 0);
-        lv_obj_set_style_bg_opa(tf_card_label_, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(tf_card_label_, 1, 0);
-        lv_obj_set_style_border_color(tf_card_label_, lv_color_hex(0x7BE2D1), 0);
-        lv_obj_set_style_radius(tf_card_label_, 5, 0);
-        lv_obj_set_style_transform_scale(tf_card_label_, 128, 0);
-        lv_obj_align(tf_card_label_, LV_ALIGN_TOP_RIGHT, -100, 18);
+        tf_card_label_ = lv_label_create(top_bar_);
+        lv_label_set_text(tf_card_label_, MATERIAL_SYMBOLS_SD_CARD);
+        lv_obj_set_style_text_font(tf_card_label_, icon_font, 0);
+        lv_obj_align(tf_card_label_, LV_ALIGN_RIGHT_MID, -42, 0);
         lv_obj_add_flag(tf_card_label_, LV_OBJ_FLAG_HIDDEN);
         if (tf_card_mounted_) {
             lv_obj_remove_flag(tf_card_label_, LV_OBJ_FLAG_HIDDEN);
@@ -791,7 +783,7 @@ public:
             lv_obj_set_style_text_font(battery_label_, icon_font, 0);
         }
         if (tf_card_label_ != nullptr) {
-            lv_obj_set_style_text_font(tf_card_label_, text_font, 0);
+            lv_obj_set_style_text_font(tf_card_label_, icon_font, 0);
         }
 
         // The generic LCD implementation recolors the status bar using the global theme.
