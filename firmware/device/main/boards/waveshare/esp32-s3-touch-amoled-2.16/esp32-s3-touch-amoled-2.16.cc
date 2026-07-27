@@ -33,6 +33,9 @@
 #include "display/lvgl_display/gif/lvgl_gif.h"
 #include "material_symbols.h"
 #include <array>
+#include <cstdlib>
+#include <esp_heap_caps.h>
+#include <esp_random.h>
 #include <esp_timer.h>
 #include <esp_vfs_fat.h>
 #include <driver/sdspi_host.h>
@@ -139,15 +142,30 @@ private:
     lv_obj_t* pet_avatar_ = nullptr;
     lv_obj_t* pet_face_label_ = nullptr;
     lv_obj_t* pet_character_image_ = nullptr;
+    lv_obj_t* scene_ = nullptr;
     lv_obj_t* pet_actions_ = nullptr;
     lv_obj_t* tf_card_label_ = nullptr;
     bool tf_card_mounted_ = false;
     static constexpr size_t kIdleFrameCount = 12;
+    static constexpr size_t kFemaleInitialFrameCapacity = 10;
+    static constexpr size_t kFemaleInitialIdleFrameCount = 10;
+    static constexpr size_t kFemaleInitialWalkFrameCount = 8;
+    using FemaleInitialFrames =
+        std::array<std::unique_ptr<LvglAllocatedImage>, kFemaleInitialFrameCapacity>;
     std::unique_ptr<LvglRawImage> home_background_;
+    std::unique_ptr<LvglAllocatedImage> scene_background_;
     std::unique_ptr<LvglRawImage> home_action_backgrounds_[4];
     std::unique_ptr<LvglRawImage> home_hud_badge_;
     std::unique_ptr<LvglRawImage> home_dialog_background_;
     std::array<std::unique_ptr<LvglRawImage>, kIdleFrameCount> idle_frames_;
+    FemaleInitialFrames female_initial_idle_05_frames_;
+    FemaleInitialFrames female_initial_idle_06_frames_;
+    FemaleInitialFrames female_initial_walk_00_frames_;
+    FemaleInitialFrames female_initial_walk_04_frames_;
+    const FemaleInitialFrames* female_initial_idle_frames_ = nullptr;
+    const FemaleInitialFrames* female_initial_walk_frames_ = nullptr;
+    bool female_initial_loaded_ = false;
+    size_t female_initial_frame_index_ = 0;
     std::unique_ptr<LvglRawImage> character_animations_[5];
     std::unique_ptr<LvglGif> character_gif_;
     std::vector<std::string> pet_dialog_pages_;
@@ -155,6 +173,26 @@ private:
     lv_timer_t* pet_dialog_timer_ = nullptr;
     lv_timer_t* pet_dialog_hide_timer_ = nullptr;
     lv_timer_t* idle_animation_timer_ = nullptr;
+    lv_timer_t* walk_animation_timer_ = nullptr;
+    lv_timer_t* autonomous_behavior_timer_ = nullptr;
+    bool autonomous_walking_ = false;
+    int walk_start_x_ = 0;
+    int walk_target_x_ = 0;
+    uint32_t walk_elapsed_ms_ = 0;
+    uint32_t walk_duration_ms_ = 0;
+    uint32_t walk_started_at_ms_ = 0;
+    static constexpr int kCharacterWidth = 152;
+    static constexpr int kCharacterHeight = 184;
+    static constexpr int kCharacterScale = 410;
+    static constexpr int kCharacterGroundY = 333;
+    static constexpr int kCharacterMinX = 4;
+    static constexpr int kCharacterMaxX = 480 - kCharacterWidth - 4;
+    // 20 FPS is smooth enough for this sprite while leaving time for audio/Wi-Fi tasks.
+    static constexpr uint32_t kMovementTickMs = 50;
+    static constexpr uint32_t kWalkFrameIntervalMs = 100;
+    static constexpr uint32_t kWalkSpeedPixelsPerSecond = 65;
+    static constexpr uint32_t kMinimumWalkDurationMs =
+        kFemaleInitialWalkFrameCount * kWalkFrameIntervalMs;
     lv_timer_t* idle_resume_timer_ = nullptr;
     size_t idle_frame_index_ = 0;
 
@@ -232,29 +270,257 @@ private:
     }
 
     void ShowIdleFrame() {
-        if (pet_character_image_ == nullptr || idle_frames_[idle_frame_index_] == nullptr) {
+        if (pet_character_image_ == nullptr) {
             return;
         }
-        lv_image_set_src(pet_character_image_, idle_frames_[idle_frame_index_]->image_dsc());
+        if (female_initial_loaded_) {
+            auto& frame = (*female_initial_idle_frames_)[female_initial_frame_index_];
+            if (frame != nullptr) {
+                lv_image_set_scale(pet_character_image_, kCharacterScale);
+                lv_image_set_src(pet_character_image_, frame->image_dsc());
+            }
+            return;
+        }
+        if (idle_frames_[idle_frame_index_] != nullptr) {
+            lv_image_set_src(pet_character_image_, idle_frames_[idle_frame_index_]->image_dsc());
+        }
     }
 
     void StartIdleAnimation() {
-        if (idle_frames_[0] == nullptr) {
+        if ((!female_initial_loaded_ && idle_frames_[0] == nullptr) || pet_character_image_ == nullptr) {
             return;
         }
         character_gif_.reset();
+        if (walk_animation_timer_ != nullptr) {
+            lv_timer_pause(walk_animation_timer_);
+        }
         idle_frame_index_ = 0;
+        female_initial_frame_index_ = 0;
         ShowIdleFrame();
         if (idle_animation_timer_ == nullptr) {
             idle_animation_timer_ = lv_timer_create([](lv_timer_t* timer) {
                 auto* display = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
-                display->idle_frame_index_ =
-                    (display->idle_frame_index_ + 1) % CustomLcdDisplay::kIdleFrameCount;
+                if (display->female_initial_loaded_) {
+                    display->female_initial_frame_index_ =
+                        (display->female_initial_frame_index_ + 1) %
+                        CustomLcdDisplay::kFemaleInitialIdleFrameCount;
+                } else {
+                    display->idle_frame_index_ =
+                        (display->idle_frame_index_ + 1) % CustomLcdDisplay::kIdleFrameCount;
+                }
                 display->ShowIdleFrame();
             }, 120, this);
         } else {
             lv_timer_resume(idle_animation_timer_);
             lv_timer_reset(idle_animation_timer_);
+        }
+    }
+
+    void StartWalkAnimation(int target_x) {
+        if (!female_initial_loaded_ || pet_character_image_ == nullptr ||
+            female_initial_walk_frames_ == nullptr || (*female_initial_walk_frames_)[0] == nullptr) {
+            return;
+        }
+        character_gif_.reset();
+        if (idle_animation_timer_ != nullptr) {
+            lv_timer_pause(idle_animation_timer_);
+        }
+        female_initial_frame_index_ = 0;
+        walk_start_x_ = lv_obj_get_x(pet_character_image_);
+        walk_target_x_ = std::clamp(target_x, kCharacterMinX, kCharacterMaxX);
+        walk_elapsed_ms_ = 0;
+        walk_started_at_ms_ = lv_tick_get();
+        const uint32_t walk_distance =
+            static_cast<uint32_t>(std::abs(walk_target_x_ - walk_start_x_));
+        walk_duration_ms_ = std::max(
+            kMinimumWalkDurationMs,
+            (walk_distance * 1000U + kWalkSpeedPixelsPerSecond - 1U) /
+                kWalkSpeedPixelsPerSecond);
+        lv_image_set_scale(pet_character_image_, kCharacterScale);
+        lv_image_set_src(pet_character_image_, (*female_initial_walk_frames_)[0]->image_dsc());
+        if (walk_animation_timer_ == nullptr) {
+            walk_animation_timer_ = lv_timer_create([](lv_timer_t* timer) {
+                auto* display = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
+                display->walk_elapsed_ms_ = std::min(
+                    lv_tick_elaps(display->walk_started_at_ms_),
+                    display->walk_duration_ms_);
+                const size_t next_frame =
+                    static_cast<size_t>(display->walk_elapsed_ms_ /
+                        CustomLcdDisplay::kWalkFrameIntervalMs) %
+                    CustomLcdDisplay::kFemaleInitialWalkFrameCount;
+                if (next_frame != display->female_initial_frame_index_) {
+                    display->female_initial_frame_index_ = next_frame;
+                    auto& frame = (*display->female_initial_walk_frames_)[next_frame];
+                    if (display->pet_character_image_ != nullptr && frame != nullptr) {
+                        lv_image_set_src(display->pet_character_image_, frame->image_dsc());
+                    }
+                }
+                if (display->pet_character_image_ != nullptr) {
+                    const int distance = display->walk_target_x_ - display->walk_start_x_;
+                    const int x = display->walk_start_x_ + distance *
+                        static_cast<int>(display->walk_elapsed_ms_) /
+                        static_cast<int>(display->walk_duration_ms_);
+                    lv_obj_set_x(display->pet_character_image_, x);
+                }
+                if (display->walk_elapsed_ms_ == display->walk_duration_ms_) {
+                    lv_timer_pause(timer);
+                }
+            }, kMovementTickMs, this);
+        } else {
+            lv_timer_resume(walk_animation_timer_);
+            lv_timer_reset(walk_animation_timer_);
+        }
+    }
+
+    bool LoadPngFrameSequenceFromSd(const char* directory, size_t frame_count,
+                                    FemaleInitialFrames& target) {
+        if (frame_count == 0 || frame_count > kFemaleInitialFrameCapacity) {
+            return false;
+        }
+        FemaleInitialFrames loaded_frames;
+        for (size_t i = 0; i < frame_count; ++i) {
+            char path[128];
+            snprintf(path, sizeof(path), "%s/frame_%03u.png", directory,
+                     static_cast<unsigned>(i));
+            FILE* file = fopen(path, "rb");
+            if (file == nullptr) {
+                ESP_LOGW(TAG, "Female initial frame missing: %s", path);
+                return false;
+            }
+            fseek(file, 0, SEEK_END);
+            const long size = ftell(file);
+            rewind(file);
+            if (size <= 0) {
+                ESP_LOGW(TAG, "Female initial frame is empty: %s", path);
+                fclose(file);
+                return false;
+            }
+            auto* data = static_cast<uint8_t*>(
+                heap_caps_malloc(static_cast<size_t>(size), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+            if (data == nullptr) {
+                data = static_cast<uint8_t*>(heap_caps_malloc(static_cast<size_t>(size), MALLOC_CAP_8BIT));
+            }
+            if (data == nullptr || fread(data, 1, static_cast<size_t>(size), file) != static_cast<size_t>(size)) {
+                ESP_LOGW(TAG, "Failed to read female initial frame: %s", path);
+                if (data != nullptr) {
+                    heap_caps_free(data);
+                }
+                fclose(file);
+                return false;
+            }
+            fclose(file);
+            try {
+                loaded_frames[i] = std::make_unique<LvglAllocatedImage>(data, static_cast<size_t>(size));
+            } catch (...) {
+                heap_caps_free(data);
+                ESP_LOGW(TAG, "Failed to decode female initial frame: %s", path);
+                return false;
+            }
+        }
+        target = std::move(loaded_frames);
+        return true;
+    }
+
+    bool LoadFemaleInitialFramesFromSd(uint8_t stand_direction, uint8_t walk_direction) {
+        if (female_initial_idle_05_frames_[0] == nullptr) {
+            if (!LoadPngFrameSequenceFromSd(
+                    "/sdcard/immortal_pet/female_initial/stand/direction_05",
+                    kFemaleInitialIdleFrameCount, female_initial_idle_05_frames_) ||
+                !LoadPngFrameSequenceFromSd(
+                    "/sdcard/immortal_pet/female_initial/stand/direction_06",
+                    kFemaleInitialIdleFrameCount, female_initial_idle_06_frames_) ||
+                !LoadPngFrameSequenceFromSd(
+                    "/sdcard/immortal_pet/female_initial/walk/direction_00",
+                    kFemaleInitialWalkFrameCount, female_initial_walk_00_frames_) ||
+                !LoadPngFrameSequenceFromSd(
+                    "/sdcard/immortal_pet/female_initial/walk/direction_04",
+                    kFemaleInitialWalkFrameCount, female_initial_walk_04_frames_)) {
+                return false;
+            }
+            ESP_LOGI(TAG, "Female initial animation frames preloaded from SD card, free PSRAM: %u",
+                     static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+        }
+        female_initial_idle_frames_ = stand_direction == 5 ?
+            &female_initial_idle_05_frames_ : &female_initial_idle_06_frames_;
+        female_initial_walk_frames_ = walk_direction == 4 ?
+            &female_initial_walk_04_frames_ : &female_initial_walk_00_frames_;
+        return true;
+    }
+
+    void ApplyDongfuSceneBackground() {
+        if (scene_ == nullptr || scene_background_ == nullptr) {
+            return;
+        }
+        lv_obj_set_style_bg_image_src(scene_, scene_background_->image_dsc(), 0);
+        lv_obj_set_style_bg_image_opa(scene_, LV_OPA_COVER, 0);
+        lv_obj_invalidate(scene_);
+    }
+
+    void StartAutonomousBehavior() {
+        if (!female_initial_loaded_) {
+            return;
+        }
+        if (autonomous_behavior_timer_ == nullptr) {
+            autonomous_behavior_timer_ = lv_timer_create([](lv_timer_t* timer) {
+                auto* display = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
+                if (!display->female_initial_loaded_) {
+                    return;
+                }
+                if (display->autonomous_walking_) {
+                    if (display->walk_animation_timer_ != nullptr &&
+                        !lv_timer_get_paused(display->walk_animation_timer_)) {
+                        // The animation timer owns the position. Do not snap to the target
+                        // just because this behavior timer happens to run first.
+                        lv_timer_set_period(timer, CustomLcdDisplay::kMovementTickMs);
+                        lv_timer_reset(timer);
+                        return;
+                    }
+                    display->autonomous_walking_ = false;
+                    if (display->pet_character_image_ != nullptr) {
+                        lv_obj_set_x(display->pet_character_image_, display->walk_target_x_);
+                    }
+                    const uint8_t stand_direction = (esp_random() & 1) ? 5 : 6;
+                    if (!display->LoadFemaleInitialFramesFromSd(stand_direction, 0)) {
+                        lv_timer_set_period(timer, 5000);
+                        lv_timer_reset(timer);
+                        return;
+                    }
+                    display->StartIdleAnimation();
+                    lv_timer_set_period(timer, 3000 + esp_random() % 4000);
+                    lv_timer_reset(timer);
+                    return;
+                }
+                const uint8_t stand_direction = (esp_random() & 1) ? 5 : 6;
+                const bool should_walk = esp_random() % 3 == 0;
+                int target_x = display->pet_character_image_ == nullptr ? 90 :
+                    CustomLcdDisplay::kCharacterMinX + static_cast<int>(esp_random() %
+                        (CustomLcdDisplay::kCharacterMaxX - CustomLcdDisplay::kCharacterMinX + 1));
+                const int current_x = display->pet_character_image_ == nullptr ? 90 :
+                    lv_obj_get_x(display->pet_character_image_);
+                if (should_walk && std::abs(target_x - current_x) < 40) {
+                    target_x = current_x <
+                        (CustomLcdDisplay::kCharacterMinX + CustomLcdDisplay::kCharacterMaxX) / 2 ?
+                        CustomLcdDisplay::kCharacterMaxX : CustomLcdDisplay::kCharacterMinX;
+                }
+                const uint8_t walk_direction = target_x < current_x ? 0 : 4;
+                if (!display->LoadFemaleInitialFramesFromSd(stand_direction, walk_direction)) {
+                    lv_timer_set_period(timer, 5000);
+                    lv_timer_reset(timer);
+                    return;
+                }
+                if (should_walk) {
+                    display->autonomous_walking_ = true;
+                    display->StartWalkAnimation(target_x);
+                    lv_timer_set_period(timer, CustomLcdDisplay::kMovementTickMs);
+                } else {
+                    display->StartIdleAnimation();
+                    lv_timer_set_period(timer, 3000 + esp_random() % 4000);
+                }
+                lv_timer_reset(timer);
+            }, 4000, this);
+        } else {
+            lv_timer_resume(autonomous_behavior_timer_);
+            lv_timer_reset(autonomous_behavior_timer_);
         }
     }
 
@@ -281,7 +547,11 @@ private:
         if (idle_animation_timer_ != nullptr) {
             lv_timer_pause(idle_animation_timer_);
         }
+        if (walk_animation_timer_ != nullptr) {
+            lv_timer_pause(walk_animation_timer_);
+        }
         character_gif_.reset();
+        lv_image_set_scale(pet_character_image_, 342);
         character_gif_ = std::make_unique<LvglGif>(character_animations_[index]->image_dsc());
         if (!character_gif_->IsLoaded()) {
             character_gif_.reset();
@@ -303,7 +573,11 @@ private:
                 PlayCharacterAnimation(CharacterAnimation::kCultivate);
                 break;
             case PetAction::kJourney:
-                PlayCharacterAnimation(CharacterAnimation::kJourney);
+                if (female_initial_loaded_) {
+                    StartWalkAnimation(lv_obj_get_x(pet_character_image_));
+                } else {
+                    PlayCharacterAnimation(CharacterAnimation::kJourney);
+                }
                 break;
             case PetAction::kClaim:
                 PlayCharacterAnimation(CharacterAnimation::kClaim);
@@ -337,23 +611,20 @@ private:
             return;
         }
         ESP_LOGI(TAG, "Homepage action selected: %d", static_cast<int>(binding->action));
-        binding->display->PlayActionAnimation(binding->action);
-        if (binding->display->action_handler_) {
-            binding->display->action_handler_(binding->action);
-        }
+        binding->display->SetPetDialog("该功能暂未开发");
     }
 
     void CreateActionButton(lv_obj_t* parent, int index, const char* label, PetAction action) {
         auto* button = lv_obj_create(parent);
-        lv_obj_set_size(button, 108, 118);
+        lv_obj_set_size(button, 108, 104);
         lv_obj_set_style_radius(button, 0, 0);
         lv_obj_set_style_border_width(button, 0, 0);
         lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
         if (index >= 0 && index < 4 && home_action_backgrounds_[index] != nullptr) {
             auto* icon = lv_image_create(button);
             lv_image_set_src(icon, home_action_backgrounds_[index]->image_dsc());
-            // 160px source scaled to 108px: keep the full card inside its touch target.
-            lv_image_set_scale(icon, 173);
+            // 160px source scaled to 104px: keep controls prominent below the road.
+            lv_image_set_scale(icon, 166);
             lv_obj_center(icon);
         }
         lv_obj_set_style_pad_all(button, 0, 0);
@@ -466,6 +737,7 @@ public:
         lv_obj_align(top_bar_, LV_ALIGN_TOP_RIGHT, -18, 14);
 
         auto* scene = lv_obj_create(screen);
+        scene_ = scene;
         lv_obj_set_size(scene, 480, 480);
         lv_obj_set_style_radius(scene, 0, 0);
         lv_obj_set_style_border_width(scene, 0, 0);
@@ -483,6 +755,7 @@ public:
             lv_obj_set_style_bg_image_src(scene, home_background_->image_dsc(), 0);
             lv_obj_set_style_bg_image_opa(scene, LV_OPA_60, 0);
         }
+        ApplyDongfuSceneBackground();
         const char* action_assets[] = {
             "home_menu_cultivate_v2.png",
             "home_menu_journey_v2.png",
@@ -668,11 +941,14 @@ public:
         lv_obj_center(pet_face_label_);
 
         pet_character_image_ = lv_image_create(screen);
-        lv_obj_set_size(pet_character_image_, 299, 226);
-        lv_image_set_scale(pet_character_image_, 342);
+        // Keep every variable-sized frame bottom-centered so the feet do not jump.
+        lv_obj_set_size(pet_character_image_, kCharacterWidth, kCharacterHeight);
+        lv_image_set_scale(pet_character_image_, kCharacterScale);
+        lv_image_set_inner_align(pet_character_image_, LV_IMAGE_ALIGN_BOTTOM_MID);
         lv_obj_remove_flag(pet_character_image_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_remove_flag(pet_character_image_, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(pet_character_image_, LV_ALIGN_CENTER, -70, -8);
+        // Use a fixed foot line on the main stone road; X is the object's left edge.
+        lv_obj_set_pos(pet_character_image_, 100, kCharacterGroundY - kCharacterHeight);
         StartIdleAnimation();
 
         pet_dialog_panel_ = lv_obj_create(screen);
@@ -707,7 +983,7 @@ public:
         lv_obj_add_flag(pet_dialog_label_, LV_OBJ_FLAG_HIDDEN);
 
         pet_actions_ = lv_obj_create(screen);
-        lv_obj_set_size(pet_actions_, 456, 118);
+        lv_obj_set_size(pet_actions_, 456, 104);
         lv_obj_set_style_bg_opa(pet_actions_, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(pet_actions_, 0, 0);
         lv_obj_set_style_pad_all(pet_actions_, 0, 0);
@@ -717,8 +993,8 @@ public:
                               LV_FLEX_ALIGN_CENTER);
         lv_obj_remove_flag(pet_actions_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_remove_flag(pet_actions_, LV_OBJ_FLAG_CLICKABLE);
-        // Keep the whole 4-card row inside the AMOLED rounded-corner safe area.
-        lv_obj_align(pet_actions_, LV_ALIGN_BOTTOM_MID, 0, -32);
+        // Keep the large controls below the character's walking lane.
+        lv_obj_align(pet_actions_, LV_ALIGN_BOTTOM_MID, 0, -10);
         CreateActionButton(pet_actions_, 0, "修炼", PetAction::kBreathing);
         CreateActionButton(pet_actions_, 1, "游历", PetAction::kJourney);
         CreateActionButton(pet_actions_, 2, "收获", PetAction::kClaim);
@@ -798,6 +1074,60 @@ public:
 #if CONFIG_IMMORTAL_PET_V2
     void SetActionHandler(std::function<void(PetAction)> handler) {
         action_handler_ = std::move(handler);
+    }
+
+    bool LoadFemaleInitialAnimationsFromSd() {
+        if (!LoadFemaleInitialFramesFromSd(6, 0)) {
+            ESP_LOGW(TAG, "Female initial animations not loaded from SD card");
+            return false;
+        }
+        female_initial_loaded_ = true;
+        StartIdleAnimation();
+        StartAutonomousBehavior();
+        ESP_LOGI(TAG, "Female initial stand and walk animations loaded from SD card");
+        return true;
+    }
+
+    bool LoadDongfuSceneFromSd() {
+        constexpr const char* kBackgroundPath = "/sdcard/immortal_pet/scenes/dongfu/background.png";
+        FILE* file = fopen(kBackgroundPath, "rb");
+        if (file == nullptr) {
+            ESP_LOGW(TAG, "Dongfu scene background missing: %s", kBackgroundPath);
+            return false;
+        }
+        fseek(file, 0, SEEK_END);
+        const long size = ftell(file);
+        rewind(file);
+        if (size <= 0) {
+            fclose(file);
+            ESP_LOGW(TAG, "Dongfu scene background is empty");
+            return false;
+        }
+        auto* data = static_cast<uint8_t*>(
+            heap_caps_malloc(static_cast<size_t>(size), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (data == nullptr || fread(data, 1, static_cast<size_t>(size), file) != static_cast<size_t>(size)) {
+            if (data != nullptr) {
+                heap_caps_free(data);
+            }
+            fclose(file);
+            ESP_LOGW(TAG, "Failed to read Dongfu scene background");
+            return false;
+        }
+        fclose(file);
+        try {
+            scene_background_ = std::make_unique<LvglAllocatedImage>(data, static_cast<size_t>(size));
+        } catch (...) {
+            heap_caps_free(data);
+            ESP_LOGW(TAG, "Failed to decode Dongfu scene background");
+            return false;
+        }
+        ApplyDongfuSceneBackground();
+        ESP_LOGI(TAG, "Dongfu scene background loaded from SD card: %dx%d",
+                 scene_background_->image_dsc()->header.w,
+                 scene_background_->image_dsc()->header.h);
+        ESP_LOGI(TAG, "Free PSRAM after Dongfu background load: %u",
+                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+        return true;
     }
 
     void SetTfCardMounted(bool mounted) {
@@ -1105,10 +1435,10 @@ private:
 #endif
 
     void InitializePowerSaveTimer() {
-        power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
+        power_save_timer_ = new PowerSaveTimer(-1, 180, 600);
         power_save_timer_->OnEnterSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(true);
-            GetBacklight()->SetBrightness(20); });
+            GetBacklight()->SetBrightness(45); });
         power_save_timer_->OnExitSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(false);
             GetBacklight()->RestoreBrightness(); });
@@ -1357,6 +1687,10 @@ public:
         InitializeDisplay();
 #if CONFIG_IMMORTAL_PET_V2
         display_->SetTfCardMounted(tf_card_mounted_);
+        if (tf_card_mounted_) {
+            display_->LoadDongfuSceneFromSd();
+            display_->LoadFemaleInitialAnimationsFromSd();
+        }
         display_->SetActionHandler([this](CustomLcdDisplay::PetAction action) {
             HandlePetAction(action);
         });
