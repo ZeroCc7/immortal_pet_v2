@@ -1,0 +1,138 @@
+{
+  "canvas": {
+    "width": 416,
+    "height": 306
+  },
+  "frames": [
+    {
+      "file": "frame_000.png",
+      "x": 103,
+      "y": 104
+    },
+    {
+      "file": "frame_001.png",
+      "x": 113,
+      "y": 104
+    },
+    {
+      "file": "frame_002.png",
+      "x": 112,
+      "y": 102
+    },
+    {
+      "file": "frame_003.png",
+      "x": 110,
+      "y": 99
+    },
+    {
+      "file": "frame_004.png",
+      "x": 108,
+      "y": 97
+    },
+    {
+      "file": "frame_005.png",
+      "x": 107,
+      "y": 95
+    },
+    {
+      "file": "frame_006.png",
+      "x": 106,
+      "y": 94
+    },
+    {
+      "file": "frame_007.png",
+      "x": 107,
+      "y": 93
+    },
+    {
+      "file": "frame_008.png",
+      "x": 83,
+      "y": 24
+    },
+    {
+      "file": "frame_009.png",
+      "x": 72,
+      "y": 16
+    },
+    {
+      "file": "frame_010.png",
+      "x": 32,
+      "y": 3
+    },
+    {
+      "file": "frame_011.png",
+      "x": 0,
+      "y": 0
+    },
+    {
+      "file": "frame_012.png",
+      "x": 2,
+      "y": 13
+    },
+    {
+      "file": "frame_013.png",
+      "x": 112,
+      "y": 39
+    },
+    {
+      "file": "frame_014.png",
+      "x": 112,
+      "y": 43
+    },
+    {
+      "file": "frame_015.png",
+      "x": 106,
+      "y": 48
+    },
+    {
+      "file": "frame_016.png",
+      "x": 120,
+      "y": 51
+    },
+    {
+      "file": "frame_017.png",
+      "x": 95,
+      "y": 54
+    },
+    {
+      "file": "frame_018.png",
+      "x": 113,
+      "y": 53
+    },
+    {
+      "file": "frame_019.png",
+      "x": 100,
+      "y": 63
+    },
+    {
+      "file": "frame_020.png",
+      "x": 107,
+      "y": 74
+    },
+    {
+      "file": "frame_021.png",
+      "x": 98,
+      "y": 61
+    },
+    {
+      "file": "frame_022.png",
+      "x": 78,
+      "y": 57
+    },
+    {
+      "file": "frame_023.png",
+      "x": 98,
+      "y": 45
+    },
+    {
+      "file": "frame_024.png",
+      "x": 106,
+      "y": 27
+    },
+    {
+      "file": "frame_025.png",
+      "x": 115,
+      "y": 44
+    }
+  ]
+}

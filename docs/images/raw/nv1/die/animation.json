@@ -1,0 +1,368 @@
+{
+  "canvas": {
+    "width": 326,
+    "height": 318
+  },
+  "frames": [
+    {
+      "file": "frame_000.png",
+      "x": 79,
+      "y": 163
+    },
+    {
+      "file": "frame_001.png",
+      "x": 79,
+      "y": 164
+    },
+    {
+      "file": "frame_002.png",
+      "x": 82,
+      "y": 163
+    },
+    {
+      "file": "frame_003.png",
+      "x": 88,
+      "y": 161
+    },
+    {
+      "file": "frame_004.png",
+      "x": 88,
+      "y": 159
+    },
+    {
+      "file": "frame_005.png",
+      "x": 104,
+      "y": 160
+    },
+    {
+      "file": "frame_006.png",
+      "x": 104,
+      "y": 159
+    },
+    {
+      "file": "frame_007.png",
+      "x": 104,
+      "y": 146
+    },
+    {
+      "file": "frame_008.png",
+      "x": 104,
+      "y": 143
+    },
+    {
+      "file": "frame_009.png",
+      "x": 105,
+      "y": 135
+    },
+    {
+      "file": "frame_010.png",
+      "x": 114,
+      "y": 127
+    },
+    {
+      "file": "frame_011.png",
+      "x": 123,
+      "y": 115
+    },
+    {
+      "file": "frame_012.png",
+      "x": 133,
+      "y": 100
+    },
+    {
+      "file": "frame_013.png",
+      "x": 127,
+      "y": 92
+    },
+    {
+      "file": "frame_014.png",
+      "x": 123,
+      "y": 92
+    },
+    {
+      "file": "frame_015.png",
+      "x": 138,
+      "y": 116
+    },
+    {
+      "file": "frame_016.png",
+      "x": 136,
+      "y": 108
+    },
+    {
+      "file": "frame_017.png",
+      "x": 135,
+      "y": 216
+    },
+    {
+      "file": "frame_018.png",
+      "x": 0,
+      "y": 164
+    },
+    {
+      "file": "frame_019.png",
+      "x": 5,
+      "y": 164
+    },
+    {
+      "file": "frame_020.png",
+      "x": 10,
+      "y": 166
+    },
+    {
+      "file": "frame_021.png",
+      "x": 16,
+      "y": 165
+    },
+    {
+      "file": "frame_022.png",
+      "x": 24,
+      "y": 163
+    },
+    {
+      "file": "frame_023.png",
+      "x": 19,
+      "y": 160
+    },
+    {
+      "file": "frame_024.png",
+      "x": 11,
+      "y": 155
+    },
+    {
+      "file": "frame_025.png",
+      "x": 43,
+      "y": 148
+    },
+    {
+      "file": "frame_026.png",
+      "x": 40,
+      "y": 139
+    },
+    {
+      "file": "frame_027.png",
+      "x": 34,
+      "y": 126
+    },
+    {
+      "file": "frame_028.png",
+      "x": 26,
+      "y": 112
+    },
+    {
+      "file": "frame_029.png",
+      "x": 33,
+      "y": 100
+    },
+    {
+      "file": "frame_030.png",
+      "x": 20,
+      "y": 104
+    },
+    {
+      "file": "frame_031.png",
+      "x": 8,
+      "y": 97
+    },
+    {
+      "file": "frame_032.png",
+      "x": 21,
+      "y": 96
+    },
+    {
+      "file": "frame_033.png",
+      "x": 18,
+      "y": 101
+    },
+    {
+      "file": "frame_034.png",
+      "x": 34,
+      "y": 101
+    },
+    {
+      "file": "frame_035.png",
+      "x": 118,
+      "y": 226
+    },
+    {
+      "file": "frame_036.png",
+      "x": 67,
+      "y": 91
+    },
+    {
+      "file": "frame_037.png",
+      "x": 79,
+      "y": 98
+    },
+    {
+      "file": "frame_038.png",
+      "x": 85,
+      "y": 102
+    },
+    {
+      "file": "frame_039.png",
+      "x": 86,
+      "y": 99
+    },
+    {
+      "file": "frame_040.png",
+      "x": 79,
+      "y": 93
+    },
+    {
+      "file": "frame_041.png",
+      "x": 69,
+      "y": 85
+    },
+    {
+      "file": "frame_042.png",
+      "x": 71,
+      "y": 77
+    },
+    {
+      "file": "frame_043.png",
+      "x": 72,
+      "y": 120
+    },
+    {
+      "file": "frame_044.png",
+      "x": 62,
+      "y": 111
+    },
+    {
+      "file": "frame_045.png",
+      "x": 50,
+      "y": 99
+    },
+    {
+      "file": "frame_046.png",
+      "x": 62,
+      "y": 98
+    },
+    {
+      "file": "frame_047.png",
+      "x": 80,
+      "y": 55
+    },
+    {
+      "file": "frame_048.png",
+      "x": 65,
+      "y": 38
+    },
+    {
+      "file": "frame_049.png",
+      "x": 58,
+      "y": 5
+    },
+    {
+      "file": "frame_050.png",
+      "x": 62,
+      "y": 32
+    },
+    {
+      "file": "frame_051.png",
+      "x": 62,
+      "y": 20
+    },
+    {
+      "file": "frame_052.png",
+      "x": 65,
+      "y": 3
+    },
+    {
+      "file": "frame_053.png",
+      "x": 115,
+      "y": 207
+    },
+    {
+      "file": "frame_054.png",
+      "x": 79,
+      "y": 140
+    },
+    {
+      "file": "frame_055.png",
+      "x": 79,
+      "y": 139
+    },
+    {
+      "file": "frame_056.png",
+      "x": 81,
+      "y": 139
+    },
+    {
+      "file": "frame_057.png",
+      "x": 96,
+      "y": 139
+    },
+    {
+      "file": "frame_058.png",
+      "x": 96,
+      "y": 139
+    },
+    {
+      "file": "frame_059.png",
+      "x": 105,
+      "y": 135
+    },
+    {
+      "file": "frame_060.png",
+      "x": 111,
+      "y": 131
+    },
+    {
+      "file": "frame_061.png",
+      "x": 111,
+      "y": 121
+    },
+    {
+      "file": "frame_062.png",
+      "x": 111,
+      "y": 109
+    },
+    {
+      "file": "frame_063.png",
+      "x": 113,
+      "y": 98
+    },
+    {
+      "file": "frame_064.png",
+      "x": 120,
+      "y": 99
+    },
+    {
+      "file": "frame_065.png",
+      "x": 128,
+      "y": 65
+    },
+    {
+      "file": "frame_066.png",
+      "x": 129,
+      "y": 41
+    },
+    {
+      "file": "frame_067.png",
+      "x": 128,
+      "y": 0
+    },
+    {
+      "file": "frame_068.png",
+      "x": 124,
+      "y": 29
+    },
+    {
+      "file": "frame_069.png",
+      "x": 123,
+      "y": 52
+    },
+    {
+      "file": "frame_070.png",
+      "x": 125,
+      "y": 19
+    },
+    {
+      "file": "frame_071.png",
+      "x": 129,
+      "y": 206
+    }
+  ]
+}

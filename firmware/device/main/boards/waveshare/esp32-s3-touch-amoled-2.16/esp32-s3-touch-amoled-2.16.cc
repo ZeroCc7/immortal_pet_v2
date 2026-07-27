@@ -17,6 +17,7 @@
 #include <esp_log.h>
 #include <esp_lcd_panel_vendor.h>
 #include <algorithm>
+#include <cstdio>
 #include <driver/i2c_master.h>
 #include <driver/spi_master.h>
 #include <cstring>
@@ -30,9 +31,13 @@
 #include "display/lvgl_display/lvgl_theme.h"
 #include "display/lvgl_display/lvgl_image.h"
 #include "display/lvgl_display/gif/lvgl_gif.h"
+#include <array>
 #include <esp_timer.h>
+#include <esp_vfs_fat.h>
+#include <driver/sdspi_host.h>
 #include <memory>
 #include <mutex>
+#include <sdmmc_cmd.h>
 #include <string>
 #include <vector>
 #endif
@@ -134,16 +139,23 @@ private:
     lv_obj_t* pet_face_label_ = nullptr;
     lv_obj_t* pet_character_image_ = nullptr;
     lv_obj_t* pet_actions_ = nullptr;
+    lv_obj_t* tf_card_label_ = nullptr;
+    bool tf_card_mounted_ = false;
+    static constexpr size_t kIdleFrameCount = 12;
     std::unique_ptr<LvglRawImage> home_background_;
     std::unique_ptr<LvglRawImage> home_action_backgrounds_[4];
     std::unique_ptr<LvglRawImage> home_hud_badge_;
     std::unique_ptr<LvglRawImage> home_dialog_background_;
+    std::array<std::unique_ptr<LvglRawImage>, kIdleFrameCount> idle_frames_;
     std::unique_ptr<LvglRawImage> character_animations_[5];
     std::unique_ptr<LvglGif> character_gif_;
     std::vector<std::string> pet_dialog_pages_;
     size_t pet_dialog_page_index_ = 0;
     lv_timer_t* pet_dialog_timer_ = nullptr;
     lv_timer_t* pet_dialog_hide_timer_ = nullptr;
+    lv_timer_t* idle_animation_timer_ = nullptr;
+    lv_timer_t* idle_resume_timer_ = nullptr;
+    size_t idle_frame_index_ = 0;
 
     static size_t Utf8PageEnd(const std::string& text, size_t start, size_t max_chars) {
         size_t offset = start;
@@ -210,9 +222,52 @@ private:
         if (battery_label_ != nullptr) {
             lv_obj_set_style_text_color(battery_label_, status_text_color, 0);
         }
+        if (tf_card_label_ != nullptr) {
+            lv_obj_set_style_text_color(tf_card_label_, status_text_color, 0);
+        }
         if (notification_label_ != nullptr) {
             lv_obj_set_style_text_color(notification_label_, status_text_color, 0);
         }
+    }
+
+    void ShowIdleFrame() {
+        if (pet_character_image_ == nullptr || idle_frames_[idle_frame_index_] == nullptr) {
+            return;
+        }
+        lv_image_set_src(pet_character_image_, idle_frames_[idle_frame_index_]->image_dsc());
+    }
+
+    void StartIdleAnimation() {
+        if (idle_frames_[0] == nullptr) {
+            return;
+        }
+        character_gif_.reset();
+        idle_frame_index_ = 0;
+        ShowIdleFrame();
+        if (idle_animation_timer_ == nullptr) {
+            idle_animation_timer_ = lv_timer_create([](lv_timer_t* timer) {
+                auto* display = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
+                display->idle_frame_index_ =
+                    (display->idle_frame_index_ + 1) % CustomLcdDisplay::kIdleFrameCount;
+                display->ShowIdleFrame();
+            }, 120, this);
+        } else {
+            lv_timer_resume(idle_animation_timer_);
+            lv_timer_reset(idle_animation_timer_);
+        }
+    }
+
+    void ResumeIdleAfterAction() {
+        if (idle_resume_timer_ != nullptr) {
+            lv_timer_delete(idle_resume_timer_);
+        }
+        idle_resume_timer_ = lv_timer_create([](lv_timer_t* timer) {
+            auto* display = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
+            display->idle_resume_timer_ = nullptr;
+            display->StartIdleAnimation();
+            lv_timer_delete(timer);
+        }, 1400, this);
+        lv_timer_set_repeat_count(idle_resume_timer_, 1);
     }
 
     void PlayCharacterAnimation(CharacterAnimation animation) {
@@ -222,6 +277,9 @@ private:
             return;
         }
 
+        if (idle_animation_timer_ != nullptr) {
+            lv_timer_pause(idle_animation_timer_);
+        }
         character_gif_.reset();
         character_gif_ = std::make_unique<LvglGif>(character_animations_[index]->image_dsc());
         if (!character_gif_->IsLoaded()) {
@@ -235,6 +293,7 @@ private:
             }
         });
         character_gif_->Start();
+        ResumeIdleAfterAction();
     }
 
     void PlayActionAnimation(PetAction action) {
@@ -451,19 +510,29 @@ public:
                 std::make_unique<LvglRawImage>(dialog_background_data, dialog_background_size);
         }
         const char* character_assets[] = {
-            "home_character_idle.gif",
+            nullptr,
             "home_character_cultivate.gif",
             "home_character_journey.gif",
             "home_character_claim.gif",
             "home_character_talk.gif",
         };
-        for (size_t i = 0; i < 5; ++i) {
+        for (size_t i = 1; i < 5; ++i) {
             void* character_data = nullptr;
             size_t character_size = 0;
             if (Assets::GetInstance().GetAssetData(character_assets[i], character_data,
                                                    character_size)) {
                 character_animations_[i] =
                     std::make_unique<LvglRawImage>(character_data, character_size);
+            }
+        }
+        for (size_t i = 0; i < kIdleFrameCount; ++i) {
+            char asset_name[32];
+            snprintf(asset_name, sizeof(asset_name), "home_idle_frame_%03u.png",
+                     static_cast<unsigned>(i + 24));
+            void* idle_data = nullptr;
+            size_t idle_size = 0;
+            if (Assets::GetInstance().GetAssetData(asset_name, idle_data, idle_size)) {
+                idle_frames_[i] = std::make_unique<LvglRawImage>(idle_data, idle_size);
             }
         }
         lv_obj_move_background(scene);
@@ -482,6 +551,24 @@ public:
         lv_label_set_text(battery_label_, "");
         lv_obj_set_style_text_font(battery_label_, icon_font, 0);
         lv_obj_align(battery_label_, LV_ALIGN_RIGHT_MID, 0, 0);
+
+        tf_card_label_ = lv_label_create(screen);
+        lv_label_set_text(tf_card_label_, "TF");
+        lv_obj_set_style_text_font(tf_card_label_, text_font, 0);
+        lv_obj_set_size(tf_card_label_, 36, 20);
+        lv_obj_set_style_text_align(tf_card_label_, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_color(tf_card_label_, lv_color_hex(0xE4F6EC), 0);
+        lv_obj_set_style_bg_color(tf_card_label_, lv_color_hex(0x164D45), 0);
+        lv_obj_set_style_bg_opa(tf_card_label_, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(tf_card_label_, 1, 0);
+        lv_obj_set_style_border_color(tf_card_label_, lv_color_hex(0x7BE2D1), 0);
+        lv_obj_set_style_radius(tf_card_label_, 5, 0);
+        lv_obj_set_style_transform_scale(tf_card_label_, 128, 0);
+        lv_obj_align(tf_card_label_, LV_ALIGN_TOP_RIGHT, -100, 18);
+        lv_obj_add_flag(tf_card_label_, LV_OBJ_FLAG_HIDDEN);
+        if (tf_card_mounted_) {
+            lv_obj_remove_flag(tf_card_label_, LV_OBJ_FLAG_HIDDEN);
+        }
 
         notification_label_ = lv_label_create(top_bar_);
         lv_obj_set_width(notification_label_, 0);
@@ -589,12 +676,12 @@ public:
         lv_obj_center(pet_face_label_);
 
         pet_character_image_ = lv_image_create(screen);
-        lv_obj_set_size(pet_character_image_, 300, 300);
-        lv_image_set_scale(pet_character_image_, 205);
+        lv_obj_set_size(pet_character_image_, 299, 226);
+        lv_image_set_scale(pet_character_image_, 342);
         lv_obj_remove_flag(pet_character_image_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_remove_flag(pet_character_image_, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_align(pet_character_image_, LV_ALIGN_CENTER, -70, -8);
-        PlayCharacterAnimation(CharacterAnimation::kIdle);
+        StartIdleAnimation();
 
         pet_dialog_panel_ = lv_obj_create(screen);
         lv_obj_set_size(pet_dialog_panel_, 404, 86);
@@ -703,6 +790,9 @@ public:
         if (battery_label_ != nullptr) {
             lv_obj_set_style_text_font(battery_label_, icon_font, 0);
         }
+        if (tf_card_label_ != nullptr) {
+            lv_obj_set_style_text_font(tf_card_label_, text_font, 0);
+        }
 
         // The generic LCD implementation recolors the status bar using the global theme.
         // This screen owns its full visual design, so preserve its explicit contrast instead.
@@ -716,6 +806,19 @@ public:
 #if CONFIG_IMMORTAL_PET_V2
     void SetActionHandler(std::function<void(PetAction)> handler) {
         action_handler_ = std::move(handler);
+    }
+
+    void SetTfCardMounted(bool mounted) {
+        tf_card_mounted_ = mounted;
+        DisplayLockGuard lock(this);
+        if (tf_card_label_ == nullptr) {
+            return;
+        }
+        if (mounted) {
+            lv_obj_remove_flag(tf_card_label_, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(tf_card_label_, LV_OBJ_FLAG_HIDDEN);
+        }
     }
 
     void UpdatePetStats(const immortal_pet::GameState& state) {
@@ -890,6 +993,53 @@ private:
 #if CONFIG_IMMORTAL_PET_V2
     immortal_pet::GameEngine game_engine_;
     std::mutex game_mutex_;
+    sdmmc_card_t* tf_card_ = nullptr;
+    bool tf_card_mounted_ = false;
+
+    void InitializeTfCard() {
+        constexpr spi_host_device_t kTfCardSpiHost = SPI3_HOST;
+        sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+        host.slot = kTfCardSpiHost;
+        host.max_freq_khz = 10000;
+
+        spi_bus_config_t bus_config = {};
+        bus_config.mosi_io_num = TF_CARD_MOSI_PIN;
+        bus_config.miso_io_num = TF_CARD_MISO_PIN;
+        bus_config.sclk_io_num = TF_CARD_SCLK_PIN;
+        bus_config.quadwp_io_num = GPIO_NUM_NC;
+        bus_config.quadhd_io_num = GPIO_NUM_NC;
+        bus_config.data4_io_num = GPIO_NUM_NC;
+        bus_config.data5_io_num = GPIO_NUM_NC;
+        bus_config.data6_io_num = GPIO_NUM_NC;
+        bus_config.data7_io_num = GPIO_NUM_NC;
+        bus_config.max_transfer_sz = 4096;
+
+        esp_err_t error = spi_bus_initialize(kTfCardSpiHost, &bus_config, SDSPI_DEFAULT_DMA);
+        if (error != ESP_OK) {
+            ESP_LOGW(TAG, "TF card SPI bus initialization failed: %s", esp_err_to_name(error));
+            return;
+        }
+
+        sdspi_device_config_t device_config = SDSPI_DEVICE_CONFIG_DEFAULT();
+        device_config.gpio_cs = TF_CARD_CS_PIN;
+        device_config.host_id = kTfCardSpiHost;
+
+        esp_vfs_fat_mount_config_t mount_config = {};
+        mount_config.format_if_mount_failed = false;
+        mount_config.max_files = 4;
+        mount_config.allocation_unit_size = 16 * 1024;
+
+        error = esp_vfs_fat_sdspi_mount("/sdcard", &host, &device_config, &mount_config,
+                                        &tf_card_);
+        if (error != ESP_OK) {
+            ESP_LOGW(TAG, "TF card mount failed: %s", esp_err_to_name(error));
+            spi_bus_free(kTfCardSpiHost);
+            return;
+        }
+
+        tf_card_mounted_ = true;
+        ESP_LOGI(TAG, "TF card mounted at /sdcard");
+    }
 
     int64_t GameNowSeconds() const {
         return esp_timer_get_time() / 1000000;
@@ -1209,8 +1359,12 @@ public:
 #endif
         InitializeAxp2101();
         InitializeSpi();
+#if CONFIG_IMMORTAL_PET_V2
+        InitializeTfCard();
+#endif
         InitializeDisplay();
 #if CONFIG_IMMORTAL_PET_V2
+        display_->SetTfCardMounted(tf_card_mounted_);
         display_->SetActionHandler([this](CustomLcdDisplay::PetAction action) {
             HandlePetAction(action);
         });
