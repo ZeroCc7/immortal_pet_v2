@@ -147,6 +147,11 @@ private:
     lv_obj_t* pet_state_label_ = nullptr;
     lv_obj_t* pet_stats_label_ = nullptr;
     lv_obj_t* pet_hud_panel_ = nullptr;
+    lv_obj_t* pet_realm_badge_ = nullptr;
+    lv_obj_t* pet_realm_tag_ = nullptr;
+    lv_obj_t* pet_realm_title_ = nullptr;
+    lv_obj_t* pet_realm_layer_ = nullptr;
+    lv_obj_t* cultivation_track_ = nullptr;
     lv_obj_t* pet_dialog_panel_ = nullptr;
     lv_obj_t* pet_dialog_label_ = nullptr;
     lv_obj_t* cultivation_fill_ = nullptr;
@@ -1403,6 +1408,7 @@ public:
             auto* badge = lv_image_create(pet_hud_panel_);
             lv_image_set_src(badge, home_hud_badge_->image_dsc());
             lv_obj_align(badge, LV_ALIGN_LEFT_MID, 8, 0);
+            pet_realm_badge_ = badge;
         } else {
             auto* badge = lv_obj_create(pet_hud_panel_);
             lv_obj_set_size(badge, 58, 58);
@@ -1414,6 +1420,7 @@ public:
             lv_obj_remove_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
             lv_obj_remove_flag(badge, LV_OBJ_FLAG_CLICKABLE);
             lv_obj_align(badge, LV_ALIGN_LEFT_MID, 8, 0);
+            pet_realm_badge_ = badge;
 
             auto* badge_icon = lv_label_create(badge);
             lv_label_set_text(badge_icon, MATERIAL_SYMBOLS_PERSON);
@@ -1426,27 +1433,32 @@ public:
             auto* realm_tag = lv_image_create(pet_hud_panel_);
             lv_image_set_src(realm_tag, home_realm_tag_->image_dsc());
             lv_obj_align(realm_tag, LV_ALIGN_BOTTOM_LEFT, 14, -1);
+            pet_realm_tag_ = realm_tag;
         } else {
             auto* realm_tag = lv_label_create(pet_hud_panel_);
             lv_label_set_text(realm_tag, "境界");
             lv_obj_set_style_text_color(realm_tag, lv_color_hex(0xF3DC9A), 0);
             lv_obj_align(realm_tag, LV_ALIGN_BOTTOM_LEFT, 14, -1);
+            pet_realm_tag_ = realm_tag;
         }
 
         if (home_realm_title_ != nullptr) {
             auto* realm_title = lv_image_create(pet_hud_panel_);
             lv_image_set_src(realm_title, home_realm_title_->image_dsc());
             lv_obj_align(realm_title, LV_ALIGN_TOP_LEFT, 72, 4);
+            pet_realm_title_ = realm_title;
             if (home_realm_layer_ != nullptr) {
                 auto* realm_layer = lv_image_create(pet_hud_panel_);
                 lv_image_set_src(realm_layer, home_realm_layer_->image_dsc());
                 lv_obj_align(realm_layer, LV_ALIGN_TOP_LEFT, 168, 15);
+                pet_realm_layer_ = realm_layer;
             }
         } else {
             pet_title_label_ = lv_label_create(pet_hud_panel_);
-            lv_label_set_text(pet_title_label_, "炼气三层");
+            lv_label_set_text(pet_title_label_, "炼气一层");
             lv_obj_set_style_text_color(pet_title_label_, lv_color_hex(0xF3DC9A), 0);
             lv_obj_align(pet_title_label_, LV_ALIGN_TOP_LEFT, 72, 4);
+            pet_realm_title_ = pet_title_label_;
         }
 
         pet_state_label_ = lv_label_create(pet_hud_panel_);
@@ -1487,6 +1499,7 @@ public:
         lv_obj_set_parent(cultivation_track, pet_hud_panel_);
         lv_obj_set_size(cultivation_track, 172, 15);
         lv_obj_align(cultivation_track, LV_ALIGN_TOP_LEFT, 72, 44);
+        cultivation_track_ = cultivation_track;
 
         cultivation_fill_ = lv_obj_create(cultivation_track);
         lv_obj_set_size(cultivation_fill_, 1, 11);
@@ -1495,6 +1508,19 @@ public:
         lv_obj_set_style_bg_color(cultivation_fill_, lv_color_hex(0x65D8C7), 0);
         lv_obj_align(cultivation_fill_, LV_ALIGN_LEFT_MID, 0, 0);
         lv_obj_move_foreground(pet_stats_label_);
+        if (pet_realm_badge_ != nullptr) {
+            lv_obj_add_flag(pet_realm_badge_, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (pet_realm_tag_ != nullptr) {
+            lv_obj_add_flag(pet_realm_tag_, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (pet_realm_title_ != nullptr) {
+            lv_obj_add_flag(pet_realm_title_, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (pet_realm_layer_ != nullptr) {
+            lv_obj_add_flag(pet_realm_layer_, LV_OBJ_FLAG_HIDDEN);
+        }
+        lv_obj_add_flag(cultivation_track_, LV_OBJ_FLAG_HIDDEN);
 
         pet_avatar_ = lv_obj_create(screen);
         lv_obj_set_size(pet_avatar_, 138, 138);
@@ -1801,11 +1827,11 @@ public:
         LoadHomepageImageFromSd(path, home_hud_badge_);
         snprintf(path, sizeof(path), "%s/home_dialog_bubble_v2.png", kRoot);
         LoadHomepageImageFromSd(path, home_dialog_background_);
-        // The current profile begins at 炼气三层. Future breakthrough logic will select
-        // the matching realm title asset instead of keeping all titles resident.
+        // The first cultivation gain enters 炼气一层. Future breakthrough logic will select
+        // the matching layer asset instead of keeping every layer resident.
         snprintf(path, sizeof(path), "%s/home_realm_qi_refining_v2.png", kRoot);
         LoadHomepageImageFromSd(path, home_realm_title_);
-        snprintf(path, sizeof(path), "%s/home_realm_layer_3_v2.png", kRoot);
+        snprintf(path, sizeof(path), "%s/home_realm_layer_01_v1.png", kRoot);
         LoadHomepageImageFromSd(path, home_realm_layer_);
         snprintf(path, sizeof(path), "%s/home_realm_tag_v2.png", kRoot);
         LoadHomepageImageFromSd(path, home_realm_tag_);
@@ -1843,6 +1869,25 @@ public:
         lv_label_set_text(pet_stats_label_, text.c_str());
         const std::string home_text = std::to_string(state.cultivation) + " / 100";
         lv_label_set_text(pet_stats_label_, home_text.c_str());
+        const bool cultivation_started = state.cultivation > 0;
+        auto set_realm_visible = [cultivation_started](lv_obj_t* object) {
+            if (object == nullptr) {
+                return;
+            }
+            if (cultivation_started) {
+                lv_obj_remove_flag(object, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
+            }
+        };
+        set_realm_visible(pet_realm_badge_);
+        set_realm_visible(pet_realm_tag_);
+        set_realm_visible(pet_realm_title_);
+        set_realm_visible(pet_realm_layer_);
+        set_realm_visible(cultivation_track_);
+        if (!cultivation_started) {
+            return;
+        }
         if (cultivation_fill_ != nullptr) {
             constexpr uint32_t kCultivationCap = 100;
             constexpr int32_t kTrackInnerWidth = 168;
