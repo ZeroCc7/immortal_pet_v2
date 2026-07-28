@@ -28,6 +28,7 @@
 
 #if CONFIG_IMMORTAL_PET_V2
 #include "immortal_pet/game_engine.h"
+#include "immortal_pet/player_profile.h"
 #include "display/lvgl_display/lvgl_theme.h"
 #include "display/lvgl_display/lvgl_image.h"
 #include "display/lvgl_display/gif/lvgl_gif.h"
@@ -130,8 +131,18 @@ private:
         PetAction action = PetAction::kTalk;
     };
 
+    struct GenderBinding {
+        CustomLcdDisplay* display = nullptr;
+        immortal_pet::CharacterGender gender = immortal_pet::CharacterGender::kUnset;
+    };
+
     std::function<void(PetAction)> action_handler_;
+    std::function<bool(immortal_pet::CharacterGender)> gender_selection_handler_;
     ActionBinding action_bindings_[4];
+    GenderBinding gender_bindings_[2];
+    lv_obj_t* gender_selection_overlay_ = nullptr;
+    lv_obj_t* gender_selection_message_ = nullptr;
+    bool gender_selection_requested_ = false;
     lv_obj_t* pet_title_label_ = nullptr;
     lv_obj_t* pet_state_label_ = nullptr;
     lv_obj_t* pet_stats_label_ = nullptr;
@@ -142,10 +153,13 @@ private:
     lv_obj_t* pet_avatar_ = nullptr;
     lv_obj_t* pet_face_label_ = nullptr;
     lv_obj_t* pet_character_image_ = nullptr;
+    lv_obj_t* pet_weapon_image_ = nullptr;
     lv_obj_t* scene_ = nullptr;
     lv_obj_t* pet_actions_ = nullptr;
     lv_obj_t* tf_card_label_ = nullptr;
     bool tf_card_mounted_ = false;
+    bool tf_game_content_ready_ = false;
+    std::string tf_game_content_error_ = "未检测到可用的 TF 卡";
     static constexpr size_t kIdleFrameCount = 12;
     static constexpr size_t kFemaleInitialFrameCapacity = 10;
     static constexpr size_t kFemaleInitialIdleFrameCount = 10;
@@ -154,9 +168,12 @@ private:
         std::array<std::unique_ptr<LvglAllocatedImage>, kFemaleInitialFrameCapacity>;
     std::unique_ptr<LvglRawImage> home_background_;
     std::unique_ptr<LvglAllocatedImage> scene_background_;
-    std::unique_ptr<LvglRawImage> home_action_backgrounds_[4];
-    std::unique_ptr<LvglRawImage> home_hud_badge_;
-    std::unique_ptr<LvglRawImage> home_dialog_background_;
+    std::unique_ptr<LvglAllocatedImage> home_action_backgrounds_[4];
+    std::unique_ptr<LvglAllocatedImage> home_hud_badge_;
+    std::unique_ptr<LvglAllocatedImage> home_dialog_background_;
+    std::unique_ptr<LvglAllocatedImage> home_realm_title_;
+    std::unique_ptr<LvglAllocatedImage> home_realm_layer_;
+    std::unique_ptr<LvglAllocatedImage> home_realm_tag_;
     std::array<std::unique_ptr<LvglRawImage>, kIdleFrameCount> idle_frames_;
     FemaleInitialFrames female_initial_idle_05_frames_;
     FemaleInitialFrames female_initial_idle_06_frames_;
@@ -166,6 +183,32 @@ private:
     const FemaleInitialFrames* female_initial_walk_frames_ = nullptr;
     bool female_initial_loaded_ = false;
     size_t female_initial_frame_index_ = 0;
+    struct LayeredFrame {
+        std::unique_ptr<LvglAllocatedImage> image;
+        int16_t x = 0;
+        int16_t y = 0;
+    };
+    struct LayeredAction {
+        int16_t canvas_width = 0;
+        int16_t canvas_height = 0;
+        uint32_t frame_interval_ms = 100;
+        std::array<std::vector<LayeredFrame>, 8> directions;
+    };
+    struct LayeredAsset {
+        LayeredAction stand;
+        LayeredAction walk;
+    };
+    std::unique_ptr<LayeredAsset> layered_body_;
+    std::unique_ptr<LayeredAsset> layered_weapon_;
+    bool layered_actor_loaded_ = false;
+    immortal_pet::CharacterGender character_gender_ =
+        immortal_pet::CharacterGender::kUnset;
+    uint8_t layered_stand_direction_ = 6;
+    uint8_t layered_walk_direction_ = 0;
+    int layered_actor_x_ = 100;
+    int layered_actor_width_ = 152;
+    int layered_catalog_index_ = -1;
+    int layered_catalog_count_ = 0;
     std::unique_ptr<LvglRawImage> character_animations_[5];
     std::unique_ptr<LvglGif> character_gif_;
     std::vector<std::string> pet_dialog_pages_;
@@ -175,6 +218,7 @@ private:
     lv_timer_t* idle_animation_timer_ = nullptr;
     lv_timer_t* walk_animation_timer_ = nullptr;
     lv_timer_t* autonomous_behavior_timer_ = nullptr;
+    lv_timer_t* layered_actor_change_timer_ = nullptr;
     bool autonomous_walking_ = false;
     int walk_start_x_ = 0;
     int walk_target_x_ = 0;
@@ -183,8 +227,12 @@ private:
     uint32_t walk_started_at_ms_ = 0;
     static constexpr int kCharacterWidth = 152;
     static constexpr int kCharacterHeight = 184;
-    static constexpr int kCharacterScale = 410;
-    static constexpr int kCharacterGroundY = 333;
+    // 调整人物与武器的统一大小。256 为原始尺寸，数值越大角色越大。 410
+    static constexpr int kCharacterScale = 420;
+    static constexpr int kActionButtonHeight = 104;
+    // 调整人物与武器的整体高低位置。正数向下，负数向上，单位为屏幕像素。 40
+    static constexpr int kCharacterVerticalOffset = 20;
+    static constexpr int kCharacterGroundY = 333 + kCharacterVerticalOffset;
     static constexpr int kCharacterMinX = 4;
     static constexpr int kCharacterMaxX = 480 - kCharacterWidth - 4;
     // 20 FPS is smooth enough for this sprite while leaving time for audio/Wi-Fi tasks.
@@ -195,6 +243,101 @@ private:
         kFemaleInitialWalkFrameCount * kWalkFrameIntervalMs;
     lv_timer_t* idle_resume_timer_ = nullptr;
     size_t idle_frame_index_ = 0;
+
+    static int ScaleSpriteCoordinate(int value) {
+        return value * kCharacterScale / 256;
+    }
+
+    static void ExpandLayeredBounds(const LayeredAction& action, uint8_t direction,
+                                    bool& initialized, int& min_x, int& min_y,
+                                    int& max_x, int& max_y) {
+        if (direction >= action.directions.size()) {
+            return;
+        }
+        for (const auto& frame : action.directions[direction]) {
+            if (frame.image == nullptr) {
+                continue;
+            }
+            const auto* descriptor = frame.image->image_dsc();
+            const int right = frame.x + descriptor->header.w;
+            const int bottom = frame.y + descriptor->header.h;
+            if (!initialized) {
+                min_x = frame.x;
+                min_y = frame.y;
+                max_x = right;
+                max_y = bottom;
+                initialized = true;
+            } else {
+                min_x = std::min(min_x, static_cast<int>(frame.x));
+                min_y = std::min(min_y, static_cast<int>(frame.y));
+                max_x = std::max(max_x, right);
+                max_y = std::max(max_y, bottom);
+            }
+        }
+    }
+
+    void ShowLayeredFrame(const LayeredAction& action, uint8_t direction,
+                          size_t index, int min_x, int body_bottom_y,
+                          lv_obj_t* image) {
+        if (image == nullptr || direction >= action.directions.size()) {
+            return;
+        }
+        const auto& frames = action.directions[direction];
+        if (frames.empty()) {
+            lv_obj_add_flag(image, LV_OBJ_FLAG_HIDDEN);
+            return;
+        }
+        const auto& frame = frames[index % frames.size()];
+        if (frame.image == nullptr) {
+            return;
+        }
+        lv_obj_set_size(image, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+        lv_image_set_src(image, frame.image->image_dsc());
+        lv_image_set_inner_align(image, LV_IMAGE_ALIGN_TOP_LEFT);
+        lv_image_set_pivot(image, 0, 0);
+        lv_image_set_scale(image, kCharacterScale);
+        lv_obj_set_pos(image,
+            layered_actor_x_ + ScaleSpriteCoordinate(frame.x - min_x),
+            kCharacterGroundY +
+                ScaleSpriteCoordinate(frame.y - body_bottom_y));
+        lv_obj_remove_flag(image, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    void ShowLayeredActorFrame(bool walking, size_t index) {
+        if (!layered_actor_loaded_ || layered_body_ == nullptr) {
+            return;
+        }
+        const auto& body_action = walking ? layered_body_->walk : layered_body_->stand;
+        const uint8_t direction = walking ? layered_walk_direction_ : layered_stand_direction_;
+        const LayeredAction* weapon_action = nullptr;
+        if (layered_weapon_ != nullptr) {
+            weapon_action = walking ? &layered_weapon_->walk : &layered_weapon_->stand;
+        }
+        bool initialized = false;
+        int min_x = 0;
+        int min_y = 0;
+        int max_x = 0;
+        int max_y = 0;
+        ExpandLayeredBounds(body_action, direction, initialized, min_x, min_y, max_x, max_y);
+        if (!initialized) {
+            return;
+        }
+        // 只用人物本体确定脚底；武器可以伸到人物脚底以下，但不能抬高人物。
+        const int body_bottom_y = max_y;
+        if (weapon_action != nullptr) {
+            ExpandLayeredBounds(*weapon_action, direction, initialized,
+                                min_x, min_y, max_x, max_y);
+        }
+        layered_actor_width_ = ScaleSpriteCoordinate(max_x - min_x);
+        ShowLayeredFrame(body_action, direction, index, min_x, body_bottom_y,
+                         pet_character_image_);
+        if (layered_weapon_ != nullptr) {
+            ShowLayeredFrame(*weapon_action, direction, index, min_x, body_bottom_y,
+                             pet_weapon_image_);
+        } else if (pet_weapon_image_ != nullptr) {
+            lv_obj_add_flag(pet_weapon_image_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
 
     static size_t Utf8PageEnd(const std::string& text, size_t start, size_t max_chars) {
         size_t offset = start;
@@ -269,8 +412,249 @@ private:
         }
     }
 
+    static bool ReadSdFile(const char* path, std::vector<uint8_t>& data) {
+        FILE* file = fopen(path, "rb");
+        if (file == nullptr) {
+            return false;
+        }
+        fseek(file, 0, SEEK_END);
+        const long size = ftell(file);
+        rewind(file);
+        if (size <= 0) {
+            fclose(file);
+            return false;
+        }
+        data.resize(static_cast<size_t>(size));
+        const bool ok = fread(data.data(), 1, data.size(), file) == data.size();
+        fclose(file);
+        return ok;
+    }
+
+    static std::unique_ptr<LvglAllocatedImage> LoadLayeredPng(const char* path) {
+        std::vector<uint8_t> file_data;
+        if (!ReadSdFile(path, file_data)) {
+            ESP_LOGW(TAG, "Layered sprite frame missing: %s", path);
+            return nullptr;
+        }
+        auto* data = static_cast<uint8_t*>(
+            heap_caps_malloc(file_data.size(), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (data == nullptr) {
+            data = static_cast<uint8_t*>(heap_caps_malloc(file_data.size(), MALLOC_CAP_8BIT));
+        }
+        if (data == nullptr) {
+            return nullptr;
+        }
+        memcpy(data, file_data.data(), file_data.size());
+        try {
+            return std::make_unique<LvglAllocatedImage>(data, file_data.size());
+        } catch (...) {
+            heap_caps_free(data);
+            return nullptr;
+        }
+    }
+
+    static bool LoadLayeredAction(cJSON* root, const char* action_name,
+                                  const std::string& asset_root,
+                                  LayeredAction& target) {
+        cJSON* action = cJSON_GetObjectItem(root, action_name);
+        if (!cJSON_IsObject(action)) {
+            return false;
+        }
+        cJSON* canvas = cJSON_GetObjectItem(action, "canvas");
+        cJSON* width = cJSON_GetObjectItem(canvas, "width");
+        cJSON* height = cJSON_GetObjectItem(canvas, "height");
+        cJSON* interval = cJSON_GetObjectItem(action, "frame_interval_ms");
+        cJSON* directions = cJSON_GetObjectItem(action, "directions");
+        if (!cJSON_IsNumber(width) || !cJSON_IsNumber(height) ||
+            !cJSON_IsArray(directions)) {
+            return false;
+        }
+        target.canvas_width = static_cast<int16_t>(width->valueint);
+        target.canvas_height = static_cast<int16_t>(height->valueint);
+        target.frame_interval_ms =
+            cJSON_IsNumber(interval) && interval->valueint > 0 ?
+                static_cast<uint32_t>(interval->valueint) : 100;
+        cJSON* direction = nullptr;
+        cJSON_ArrayForEach(direction, directions) {
+            cJSON* direction_index = cJSON_GetObjectItem(direction, "index");
+            cJSON* frames = cJSON_GetObjectItem(direction, "frames");
+            if (!cJSON_IsNumber(direction_index) || !cJSON_IsArray(frames) ||
+                direction_index->valueint < 0 || direction_index->valueint >= 8) {
+                return false;
+            }
+            auto& loaded = target.directions[direction_index->valueint];
+            cJSON* frame = nullptr;
+            cJSON_ArrayForEach(frame, frames) {
+                cJSON* file = cJSON_GetObjectItem(frame, "file");
+                cJSON* x = cJSON_GetObjectItem(frame, "x");
+                cJSON* y = cJSON_GetObjectItem(frame, "y");
+                if (!cJSON_IsString(file) || !cJSON_IsNumber(x) || !cJSON_IsNumber(y)) {
+                    return false;
+                }
+                char path[320];
+                snprintf(path, sizeof(path), "%s/%s/%s", asset_root.c_str(),
+                         action_name, file->valuestring);
+                LayeredFrame loaded_frame;
+                loaded_frame.image = LoadLayeredPng(path);
+                loaded_frame.x = static_cast<int16_t>(x->valueint);
+                loaded_frame.y = static_cast<int16_t>(y->valueint);
+                if (loaded_frame.image == nullptr) {
+                    return false;
+                }
+                loaded.push_back(std::move(loaded_frame));
+            }
+        }
+        return true;
+    }
+
+    static bool LoadLayeredAsset(const std::string& asset_root,
+                                 std::unique_ptr<LayeredAsset>& target) {
+        std::vector<uint8_t> json_data;
+        const std::string config_path = asset_root + "/actor.json";
+        if (!ReadSdFile(config_path.c_str(), json_data)) {
+            return false;
+        }
+        cJSON* root = cJSON_ParseWithLength(
+            reinterpret_cast<const char*>(json_data.data()), json_data.size());
+        if (root == nullptr) {
+            return false;
+        }
+        auto loaded = std::make_unique<LayeredAsset>();
+        const bool ok =
+            LoadLayeredAction(root, "stand", asset_root, loaded->stand) &&
+            LoadLayeredAction(root, "walk", asset_root, loaded->walk);
+        cJSON_Delete(root);
+        if (!ok) {
+            return false;
+        }
+        target = std::move(loaded);
+        return true;
+    }
+
+    static bool BodyMatchesProfile(const char* body,
+                                   immortal_pet::CharacterGender gender) {
+        if (body == nullptr) {
+            return false;
+        }
+        const char* expected_body = gender == immortal_pet::CharacterGender::kMale ?
+            "male_fire/bodies/06004" : "female_fire/bodies/07004";
+        return strcmp(body, expected_body) == 0;
+    }
+
+    static bool LoadHomepageImageFromSd(
+        const char* path, std::unique_ptr<LvglAllocatedImage>& target) {
+        std::vector<uint8_t> file_data;
+        if (!ReadSdFile(path, file_data)) {
+            ESP_LOGW(TAG, "Homepage decoration missing: %s", path);
+            return false;
+        }
+        auto* data = static_cast<uint8_t*>(
+            heap_caps_malloc(file_data.size(), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (data == nullptr) {
+            data = static_cast<uint8_t*>(heap_caps_malloc(file_data.size(), MALLOC_CAP_8BIT));
+        }
+        if (data == nullptr) {
+            ESP_LOGW(TAG, "Failed to allocate homepage decoration: %s", path);
+            return false;
+        }
+        memcpy(data, file_data.data(), file_data.size());
+        try {
+            target = std::make_unique<LvglAllocatedImage>(data, file_data.size());
+            return true;
+        } catch (...) {
+            heap_caps_free(data);
+            ESP_LOGW(TAG, "Failed to decode homepage decoration: %s", path);
+            return false;
+        }
+    }
+
+    bool LoadLayeredActorFromSd(immortal_pet::CharacterGender gender,
+                                int requested_index = -1) {
+        constexpr const char* kRoot = "/sdcard/immortal_pet/layered_idle";
+        if (gender == immortal_pet::CharacterGender::kUnset) {
+            return false;
+        }
+        std::vector<uint8_t> json_data;
+        if (!ReadSdFile("/sdcard/immortal_pet/layered_idle/catalog.json", json_data)) {
+            return false;
+        }
+        cJSON* root = cJSON_ParseWithLength(
+            reinterpret_cast<const char*>(json_data.data()), json_data.size());
+        if (root == nullptr) {
+            return false;
+        }
+        cJSON* entries = cJSON_GetObjectItem(root, "entries");
+        const int entry_count = cJSON_IsArray(entries) ? cJSON_GetArraySize(entries) : 0;
+        int matching_count = 0;
+        for (int i = 0; i < entry_count; ++i) {
+            cJSON* candidate = cJSON_GetArrayItem(entries, i);
+            cJSON* candidate_body = cJSON_GetObjectItem(candidate, "body");
+            if (cJSON_IsString(candidate_body) &&
+                BodyMatchesProfile(candidate_body->valuestring, gender)) {
+                ++matching_count;
+            }
+        }
+        if (matching_count == 0) {
+            cJSON_Delete(root);
+            return false;
+        }
+
+        const int selected_matching_index = requested_index >= 0 ?
+            requested_index % matching_count :
+            static_cast<int>(esp_random() % matching_count);
+        cJSON* entry = nullptr;
+        int current_matching_index = 0;
+        for (int i = 0; i < entry_count; ++i) {
+            cJSON* candidate = cJSON_GetArrayItem(entries, i);
+            cJSON* candidate_body = cJSON_GetObjectItem(candidate, "body");
+            if (!cJSON_IsString(candidate_body) ||
+                !BodyMatchesProfile(candidate_body->valuestring, gender)) {
+                continue;
+            }
+            if (current_matching_index == selected_matching_index) {
+                entry = candidate;
+                break;
+            }
+            ++current_matching_index;
+        }
+        if (entry == nullptr) {
+            cJSON_Delete(root);
+            return false;
+        }
+        cJSON* body = cJSON_GetObjectItem(entry, "body");
+        if (!cJSON_IsString(body)) {
+            cJSON_Delete(root);
+            return false;
+        }
+        const std::string body_root = std::string(kRoot) + "/" + body->valuestring;
+        cJSON_Delete(root);
+
+        std::unique_ptr<LayeredAsset> loaded_body;
+        if (!LoadLayeredAsset(body_root, loaded_body)) {
+            return false;
+        }
+        layered_body_ = std::move(loaded_body);
+        // New characters begin unarmed. Weapon layers are loaded only after
+        // the later equipment system explicitly equips one.
+        layered_weapon_.reset();
+        layered_actor_loaded_ = true;
+        character_gender_ = gender;
+        layered_actor_x_ = 100;
+        layered_catalog_index_ = selected_matching_index;
+        layered_catalog_count_ = matching_count;
+        ESP_LOGI(TAG, "Layered idle actor [%d/%d]: body=%s weapon=none, free PSRAM=%u",
+                 selected_matching_index + 1, matching_count,
+                 body_root.c_str(),
+                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+        return true;
+    }
+
     void ShowIdleFrame() {
         if (pet_character_image_ == nullptr) {
+            return;
+        }
+        if (layered_actor_loaded_) {
+            ShowLayeredActorFrame(false, female_initial_frame_index_);
             return;
         }
         if (female_initial_loaded_) {
@@ -287,7 +671,8 @@ private:
     }
 
     void StartIdleAnimation() {
-        if ((!female_initial_loaded_ && idle_frames_[0] == nullptr) || pet_character_image_ == nullptr) {
+        if ((!layered_actor_loaded_ && !female_initial_loaded_ && idle_frames_[0] == nullptr) ||
+            pet_character_image_ == nullptr) {
             return;
         }
         character_gif_.reset();
@@ -300,7 +685,14 @@ private:
         if (idle_animation_timer_ == nullptr) {
             idle_animation_timer_ = lv_timer_create([](lv_timer_t* timer) {
                 auto* display = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
-                if (display->female_initial_loaded_) {
+                if (display->layered_actor_loaded_) {
+                    const auto& frames = display->layered_body_->stand.directions[
+                        display->layered_stand_direction_];
+                    if (!frames.empty()) {
+                        display->female_initial_frame_index_ =
+                            (display->female_initial_frame_index_ + 1) % frames.size();
+                    }
+                } else if (display->female_initial_loaded_) {
                     display->female_initial_frame_index_ =
                         (display->female_initial_frame_index_ + 1) %
                         CustomLcdDisplay::kFemaleInitialIdleFrameCount;
@@ -309,16 +701,24 @@ private:
                         (display->idle_frame_index_ + 1) % CustomLcdDisplay::kIdleFrameCount;
                 }
                 display->ShowIdleFrame();
-            }, 120, this);
+            }, layered_actor_loaded_ && layered_body_ != nullptr ?
+                layered_body_->stand.frame_interval_ms : 120, this);
         } else {
+            if (layered_actor_loaded_ && layered_body_ != nullptr) {
+                lv_timer_set_period(idle_animation_timer_,
+                                    layered_body_->stand.frame_interval_ms);
+            }
             lv_timer_resume(idle_animation_timer_);
             lv_timer_reset(idle_animation_timer_);
         }
     }
 
     void StartWalkAnimation(int target_x) {
-        if (!female_initial_loaded_ || pet_character_image_ == nullptr ||
-            female_initial_walk_frames_ == nullptr || (*female_initial_walk_frames_)[0] == nullptr) {
+        const bool legacy_ready = female_initial_loaded_ &&
+            female_initial_walk_frames_ != nullptr && (*female_initial_walk_frames_)[0] != nullptr;
+        const bool layered_ready = layered_actor_loaded_ && layered_body_ != nullptr &&
+            !layered_body_->walk.directions[layered_walk_direction_].empty();
+        if ((!legacy_ready && !layered_ready) || pet_character_image_ == nullptr) {
             return;
         }
         character_gif_.reset();
@@ -326,40 +726,66 @@ private:
             lv_timer_pause(idle_animation_timer_);
         }
         female_initial_frame_index_ = 0;
-        walk_start_x_ = lv_obj_get_x(pet_character_image_);
-        walk_target_x_ = std::clamp(target_x, kCharacterMinX, kCharacterMaxX);
+        walk_start_x_ = layered_actor_loaded_ ? layered_actor_x_ :
+            lv_obj_get_x(pet_character_image_);
+        const int maximum_x = layered_actor_loaded_ ?
+            std::max(kCharacterMinX, 480 - layered_actor_width_ - 4) :
+            kCharacterMaxX;
+        walk_target_x_ = std::clamp(target_x, kCharacterMinX, maximum_x);
         walk_elapsed_ms_ = 0;
         walk_started_at_ms_ = lv_tick_get();
         const uint32_t walk_distance =
             static_cast<uint32_t>(std::abs(walk_target_x_ - walk_start_x_));
+        const uint32_t minimum_walk_duration = layered_actor_loaded_ ?
+            static_cast<uint32_t>(
+                layered_body_->walk.directions[layered_walk_direction_].size()) *
+                layered_body_->walk.frame_interval_ms :
+            kMinimumWalkDurationMs;
         walk_duration_ms_ = std::max(
-            kMinimumWalkDurationMs,
+            minimum_walk_duration,
             (walk_distance * 1000U + kWalkSpeedPixelsPerSecond - 1U) /
                 kWalkSpeedPixelsPerSecond);
-        lv_image_set_scale(pet_character_image_, kCharacterScale);
-        lv_image_set_src(pet_character_image_, (*female_initial_walk_frames_)[0]->image_dsc());
+        if (layered_actor_loaded_) {
+            ShowLayeredActorFrame(true, 0);
+        } else {
+            lv_image_set_scale(pet_character_image_, kCharacterScale);
+            lv_image_set_src(pet_character_image_, (*female_initial_walk_frames_)[0]->image_dsc());
+        }
         if (walk_animation_timer_ == nullptr) {
             walk_animation_timer_ = lv_timer_create([](lv_timer_t* timer) {
                 auto* display = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
                 display->walk_elapsed_ms_ = std::min(
                     lv_tick_elaps(display->walk_started_at_ms_),
                     display->walk_duration_ms_);
-                const size_t next_frame =
-                    static_cast<size_t>(display->walk_elapsed_ms_ /
-                        CustomLcdDisplay::kWalkFrameIntervalMs) %
+                const uint32_t frame_interval = display->layered_actor_loaded_ ?
+                    display->layered_body_->walk.frame_interval_ms :
+                    CustomLcdDisplay::kWalkFrameIntervalMs;
+                const size_t frame_count = display->layered_actor_loaded_ ?
+                    display->layered_body_->walk.directions[
+                        display->layered_walk_direction_].size() :
                     CustomLcdDisplay::kFemaleInitialWalkFrameCount;
+                const size_t next_frame =
+                    static_cast<size_t>(display->walk_elapsed_ms_ / frame_interval) %
+                    frame_count;
                 if (next_frame != display->female_initial_frame_index_) {
                     display->female_initial_frame_index_ = next_frame;
-                    auto& frame = (*display->female_initial_walk_frames_)[next_frame];
-                    if (display->pet_character_image_ != nullptr && frame != nullptr) {
-                        lv_image_set_src(display->pet_character_image_, frame->image_dsc());
+                    if (display->layered_actor_loaded_) {
+                        display->ShowLayeredActorFrame(true, next_frame);
+                    } else {
+                        auto& frame = (*display->female_initial_walk_frames_)[next_frame];
+                        if (display->pet_character_image_ != nullptr && frame != nullptr) {
+                            lv_image_set_src(display->pet_character_image_, frame->image_dsc());
+                        }
                     }
                 }
-                if (display->pet_character_image_ != nullptr) {
-                    const int distance = display->walk_target_x_ - display->walk_start_x_;
-                    const int x = display->walk_start_x_ + distance *
-                        static_cast<int>(display->walk_elapsed_ms_) /
-                        static_cast<int>(display->walk_duration_ms_);
+                const int distance = display->walk_target_x_ - display->walk_start_x_;
+                const int x = display->walk_start_x_ + distance *
+                    static_cast<int>(display->walk_elapsed_ms_) /
+                    static_cast<int>(display->walk_duration_ms_);
+                if (display->layered_actor_loaded_) {
+                    display->layered_actor_x_ = x;
+                    display->ShowLayeredActorFrame(true, next_frame);
+                } else if (display->pet_character_image_ != nullptr) {
                     lv_obj_set_x(display->pet_character_image_, x);
                 }
                 if (display->walk_elapsed_ms_ == display->walk_duration_ms_) {
@@ -476,11 +902,15 @@ private:
                         return;
                     }
                     display->autonomous_walking_ = false;
-                    if (display->pet_character_image_ != nullptr) {
+                    if (display->layered_actor_loaded_) {
+                        display->layered_actor_x_ = display->walk_target_x_;
+                    } else if (display->pet_character_image_ != nullptr) {
                         lv_obj_set_x(display->pet_character_image_, display->walk_target_x_);
                     }
                     const uint8_t stand_direction = (esp_random() & 1) ? 5 : 6;
-                    if (!display->LoadFemaleInitialFramesFromSd(stand_direction, 0)) {
+                    display->layered_stand_direction_ = stand_direction;
+                    if (!display->layered_actor_loaded_ &&
+                        !display->LoadFemaleInitialFramesFromSd(stand_direction, 0)) {
                         lv_timer_set_period(timer, 5000);
                         lv_timer_reset(timer);
                         return;
@@ -492,18 +922,27 @@ private:
                 }
                 const uint8_t stand_direction = (esp_random() & 1) ? 5 : 6;
                 const bool should_walk = esp_random() % 3 == 0;
+                const int maximum_x = display->layered_actor_loaded_ ?
+                    std::max(CustomLcdDisplay::kCharacterMinX,
+                             480 - display->layered_actor_width_ - 4) :
+                    CustomLcdDisplay::kCharacterMaxX;
                 int target_x = display->pet_character_image_ == nullptr ? 90 :
                     CustomLcdDisplay::kCharacterMinX + static_cast<int>(esp_random() %
-                        (CustomLcdDisplay::kCharacterMaxX - CustomLcdDisplay::kCharacterMinX + 1));
-                const int current_x = display->pet_character_image_ == nullptr ? 90 :
-                    lv_obj_get_x(display->pet_character_image_);
+                        (maximum_x - CustomLcdDisplay::kCharacterMinX + 1));
+                const int current_x = display->layered_actor_loaded_ ?
+                    display->layered_actor_x_ :
+                    (display->pet_character_image_ == nullptr ? 90 :
+                        lv_obj_get_x(display->pet_character_image_));
                 if (should_walk && std::abs(target_x - current_x) < 40) {
                     target_x = current_x <
-                        (CustomLcdDisplay::kCharacterMinX + CustomLcdDisplay::kCharacterMaxX) / 2 ?
-                        CustomLcdDisplay::kCharacterMaxX : CustomLcdDisplay::kCharacterMinX;
+                        (CustomLcdDisplay::kCharacterMinX + maximum_x) / 2 ?
+                        maximum_x : CustomLcdDisplay::kCharacterMinX;
                 }
                 const uint8_t walk_direction = target_x < current_x ? 0 : 4;
-                if (!display->LoadFemaleInitialFramesFromSd(stand_direction, walk_direction)) {
+                display->layered_stand_direction_ = stand_direction;
+                display->layered_walk_direction_ = walk_direction;
+                if (!display->layered_actor_loaded_ &&
+                    !display->LoadFemaleInitialFramesFromSd(stand_direction, walk_direction)) {
                     lv_timer_set_period(timer, 5000);
                     lv_timer_reset(timer);
                     return;
@@ -521,6 +960,48 @@ private:
         } else {
             lv_timer_resume(autonomous_behavior_timer_);
             lv_timer_reset(autonomous_behavior_timer_);
+        }
+        if (layered_actor_loaded_ && layered_weapon_ != nullptr &&
+            layered_actor_change_timer_ == nullptr) {
+            layered_actor_change_timer_ = lv_timer_create([](lv_timer_t* timer) {
+                auto* display = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
+                if (display == nullptr || display->autonomous_walking_ ||
+                    display->character_gif_ != nullptr) {
+                    lv_timer_reset(timer);
+                    return;
+                }
+                if (display->idle_animation_timer_ != nullptr) {
+                    lv_timer_pause(display->idle_animation_timer_);
+                }
+#if CONFIG_IMMORTAL_PET_LAYERED_ASSET_TEST
+                const int next_index = display->layered_catalog_index_ + 1;
+                if (display->LoadLayeredActorFromSd(
+                        display->character_gender_, next_index)) {
+                    display->layered_stand_direction_ =
+                        (display->layered_catalog_index_ & 1) ? 5 : 6;
+                    display->layered_walk_direction_ =
+                        (display->layered_catalog_index_ & 1) ? 4 : 0;
+                }
+#else
+                if (display->LoadLayeredActorFromSd(display->character_gender_)) {
+                    display->layered_stand_direction_ = (esp_random() & 1) ? 5 : 6;
+                    display->layered_walk_direction_ = 0;
+                }
+#endif
+                display->StartIdleAnimation();
+#if CONFIG_IMMORTAL_PET_LAYERED_ASSET_TEST
+                lv_timer_set_period(timer, 10000);
+#else
+                lv_timer_set_period(timer, 60000 + esp_random() % 60000);
+#endif
+                lv_timer_reset(timer);
+            },
+#if CONFIG_IMMORTAL_PET_LAYERED_ASSET_TEST
+            10000,
+#else
+            60000 + esp_random() % 60000,
+#endif
+            this);
         }
     }
 
@@ -550,6 +1031,9 @@ private:
         if (walk_animation_timer_ != nullptr) {
             lv_timer_pause(walk_animation_timer_);
         }
+        if (pet_weapon_image_ != nullptr) {
+            lv_obj_add_flag(pet_weapon_image_, LV_OBJ_FLAG_HIDDEN);
+        }
         character_gif_.reset();
         lv_image_set_scale(pet_character_image_, 342);
         character_gif_ = std::make_unique<LvglGif>(character_animations_[index]->image_dsc());
@@ -574,7 +1058,8 @@ private:
                 break;
             case PetAction::kJourney:
                 if (female_initial_loaded_) {
-                    StartWalkAnimation(lv_obj_get_x(pet_character_image_));
+                    StartWalkAnimation(layered_actor_loaded_ ? layered_actor_x_ :
+                                       lv_obj_get_x(pet_character_image_));
                 } else {
                     PlayCharacterAnimation(CharacterAnimation::kJourney);
                 }
@@ -614,16 +1099,109 @@ private:
         binding->display->SetPetDialog("该功能暂未开发");
     }
 
-    void CreateActionButton(lv_obj_t* parent, int index, const char* label, PetAction action) {
+    static void OnGenderSelected(lv_event_t* event) {
+        auto* binding = static_cast<GenderBinding*>(lv_event_get_user_data(event));
+        if (binding == nullptr || binding->display == nullptr ||
+            !binding->display->gender_selection_handler_) {
+            return;
+        }
+        if (!binding->display->gender_selection_handler_(binding->gender)) {
+            if (binding->display->gender_selection_message_ != nullptr) {
+                lv_label_set_text(binding->display->gender_selection_message_,
+                                  "无法完成建档，请检查 TF 卡后重试");
+            }
+            return;
+        }
+        if (binding->display->gender_selection_overlay_ != nullptr) {
+            lv_obj_delete(binding->display->gender_selection_overlay_);
+            binding->display->gender_selection_overlay_ = nullptr;
+            binding->display->gender_selection_message_ = nullptr;
+        }
+        binding->display->gender_selection_requested_ = false;
+    }
+
+    void CreateGenderIcon(lv_obj_t* parent,
+                          immortal_pet::CharacterGender gender) {
+        static constexpr lv_point_precise_t kMaleStem[] = {{25, 25}, {44, 6}};
+        static constexpr lv_point_precise_t kMaleArrow[] = {{33, 6}, {44, 6}, {44, 17}};
+        static constexpr lv_point_precise_t kFemaleStem[] = {{25, 30}, {25, 46}};
+        static constexpr lv_point_precise_t kFemaleCross[] = {{17, 39}, {33, 39}};
+        constexpr auto kIconColor = 0xE8C986;
+
+        auto* icon = lv_obj_create(parent);
+        lv_obj_remove_style_all(icon);
+        lv_obj_set_size(icon, 50, 50);
+        lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 9);
+
+        auto* circle = lv_obj_create(icon);
+        lv_obj_remove_style_all(circle);
+        lv_obj_set_size(circle, 28, 28);
+        lv_obj_set_style_radius(circle, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_opa(circle, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(circle, 3, 0);
+        lv_obj_set_style_border_color(circle, lv_color_hex(kIconColor), 0);
+        lv_obj_align(circle, LV_ALIGN_TOP_MID, 0, 3);
+
+        const auto create_line = [icon](const lv_point_precise_t* points,
+                                        size_t point_count) {
+            auto* line = lv_line_create(icon);
+            lv_obj_set_size(line, 50, 50);
+            lv_line_set_points(line, points, point_count);
+            lv_obj_set_style_line_width(line, 3, 0);
+            lv_obj_set_style_line_rounded(line, true, 0);
+            lv_obj_set_style_line_color(line, lv_color_hex(kIconColor), 0);
+        };
+        if (gender == immortal_pet::CharacterGender::kMale) {
+            create_line(kMaleStem, 2);
+            create_line(kMaleArrow, 3);
+        } else {
+            create_line(kFemaleStem, 2);
+            create_line(kFemaleCross, 2);
+        }
+    }
+
+    void CreateGenderButton(lv_obj_t* parent, int index, const char* label,
+                            immortal_pet::CharacterGender gender, int x) {
+        auto* button = lv_button_create(parent);
+        lv_obj_set_size(button, 168, 116);
+        lv_obj_set_style_radius(button, 20, 0);
+        lv_obj_set_style_bg_color(button, lv_color_hex(0x174C43), 0);
+        lv_obj_set_style_border_width(button, 2, 0);
+        lv_obj_set_style_border_color(button, lv_color_hex(0xCDAA63), 0);
+        lv_obj_align(button, LV_ALIGN_CENTER, x, 34);
+
+        auto* text = lv_label_create(button);
+        lv_label_set_text(text, label);
+        lv_obj_set_style_text_color(text, lv_color_hex(0xFFF0C9), 0);
+        lv_obj_align(text, LV_ALIGN_BOTTOM_MID, 0, -10);
+        CreateGenderIcon(button, gender);
+
+        gender_bindings_[index] = {this, gender};
+        lv_obj_add_event_cb(button, OnGenderSelected, LV_EVENT_CLICKED,
+                            &gender_bindings_[index]);
+    }
+
+    void CreateActionButton(lv_obj_t* parent, int index, const char* label,
+                            const char* icon, PetAction action,
+                            const lv_font_t* icon_font) {
         auto* button = lv_obj_create(parent);
-        lv_obj_set_size(button, 108, 104);
-        lv_obj_set_style_radius(button, 0, 0);
-        lv_obj_set_style_border_width(button, 0, 0);
-        lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
-        if (index >= 0 && index < 4 && home_action_backgrounds_[index] != nullptr) {
+        lv_obj_set_size(button, 108, kActionButtonHeight);
+        const bool has_action_art = index >= 0 && index < 4 &&
+            home_action_backgrounds_[index] != nullptr;
+        if (has_action_art) {
+            lv_obj_set_style_border_width(button, 0, 0);
+            lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
+        } else {
+            lv_obj_set_style_radius(button, 14, 0);
+            lv_obj_set_style_border_width(button, 1, 0);
+            lv_obj_set_style_border_color(button, lv_color_hex(0xCDAA63), 0);
+            lv_obj_set_style_bg_color(button, lv_color_hex(0x174C43), 0);
+            lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+        }
+        if (has_action_art) {
             auto* icon = lv_image_create(button);
             lv_image_set_src(icon, home_action_backgrounds_[index]->image_dsc());
-            // 160px source scaled to 104px: keep controls prominent below the road.
+            // Generated assets are normalized to a 160px square canvas.
             lv_image_set_scale(icon, 166);
             lv_obj_center(icon);
         }
@@ -631,11 +1209,18 @@ private:
         lv_obj_remove_flag(button, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
 
-        auto* text = lv_label_create(button);
-        lv_label_set_text(text, label);
-        lv_obj_set_style_text_color(text, lv_color_hex(0xFFF0C9), 0);
-        lv_obj_align(text, LV_ALIGN_BOTTOM_MID, 0, -5);
-        lv_obj_add_flag(text, LV_OBJ_FLAG_HIDDEN);
+        if (!has_action_art) {
+            auto* icon_label = lv_label_create(button);
+            lv_label_set_text(icon_label, icon);
+            lv_obj_set_style_text_font(icon_label, icon_font, 0);
+            lv_obj_set_style_text_color(icon_label, lv_color_hex(0xE8C986), 0);
+            lv_obj_align(icon_label, LV_ALIGN_TOP_MID, 0, 12);
+
+            auto* text = lv_label_create(button);
+            lv_label_set_text(text, label);
+            lv_obj_set_style_text_color(text, lv_color_hex(0xFFF0C9), 0);
+            lv_obj_align(text, LV_ALIGN_BOTTOM_MID, 0, -10);
+        }
 
         action_bindings_[index] = {this, action};
         lv_obj_add_event_cb(button, OnActionClicked, LV_EVENT_CLICKED, &action_bindings_[index]);
@@ -693,6 +1278,23 @@ public:
         // to ensure lvgl objects are created before accessing them
     }
 
+    void SetupTfContentRequiredUi(lv_obj_t* screen, const lv_font_t* text_font) {
+        auto* title = lv_label_create(screen);
+        lv_label_set_text(title, "需要 TF 卡游戏资源");
+        lv_obj_set_style_text_color(title, lv_color_hex(0xE8C986), 0);
+        lv_obj_align(title, LV_ALIGN_CENTER, 0, -54);
+
+        auto* message = lv_label_create(screen);
+        lv_obj_set_width(message, 360);
+        lv_label_set_long_mode(message, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_align(message, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_color(message, lv_color_hex(0xB9D6CE), 0);
+        lv_obj_set_style_text_font(message, text_font, 0);
+        lv_label_set_text_fmt(message, "%s\n\n请插入包含 immortal_pet 目录的 FAT32 TF 卡，然后重启设备。",
+                              tf_game_content_error_.c_str());
+        lv_obj_align(message, LV_ALIGN_CENTER, 0, 34);
+    }
+
     virtual void SetupUI() override {
 #if !CONFIG_IMMORTAL_PET_V2
         SpiLcdDisplay::SetupUI();
@@ -712,6 +1314,11 @@ public:
         auto* text_font = theme->text_font()->font();
         auto* icon_font = theme->icon_font()->font();
         lv_obj_set_style_text_font(screen, text_font, 0);
+
+        if (!tf_game_content_ready_) {
+            SetupTfContentRequiredUi(screen, text_font);
+            return;
+        }
 
         container_ = lv_obj_create(screen);
         lv_obj_set_size(container_, 480, 480);
@@ -747,68 +1354,7 @@ public:
         lv_obj_remove_flag(scene, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_align(scene, LV_ALIGN_TOP_MID, 0, 0);
 
-        void* background_data = nullptr;
-        size_t background_size = 0;
-        if (Assets::GetInstance().GetAssetData("home_bg_day.png", background_data,
-                                               background_size)) {
-            home_background_ = std::make_unique<LvglRawImage>(background_data, background_size);
-            lv_obj_set_style_bg_image_src(scene, home_background_->image_dsc(), 0);
-            lv_obj_set_style_bg_image_opa(scene, LV_OPA_60, 0);
-        }
         ApplyDongfuSceneBackground();
-        const char* action_assets[] = {
-            "home_menu_cultivate_v2.png",
-            "home_menu_journey_v2.png",
-            "home_menu_claim_v2.png",
-            "home_menu_journal_v2.png",
-        };
-        for (size_t i = 0; i < 4; ++i) {
-            void* action_data = nullptr;
-            size_t action_size = 0;
-            if (Assets::GetInstance().GetAssetData(action_assets[i], action_data, action_size)) {
-                home_action_backgrounds_[i] =
-                    std::make_unique<LvglRawImage>(action_data, action_size);
-            }
-        }
-        void* hud_badge_data = nullptr;
-        size_t hud_badge_size = 0;
-        if (Assets::GetInstance().GetAssetData("home_hud_badge_v2.png", hud_badge_data,
-                                               hud_badge_size)) {
-            home_hud_badge_ = std::make_unique<LvglRawImage>(hud_badge_data, hud_badge_size);
-        }
-        void* dialog_background_data = nullptr;
-        size_t dialog_background_size = 0;
-        if (Assets::GetInstance().GetAssetData("home_dialog_bubble_v2.png", dialog_background_data,
-                                               dialog_background_size)) {
-            home_dialog_background_ =
-                std::make_unique<LvglRawImage>(dialog_background_data, dialog_background_size);
-        }
-        const char* character_assets[] = {
-            nullptr,
-            "home_character_cultivate.gif",
-            "home_character_journey.gif",
-            "home_character_claim.gif",
-            "home_character_talk.gif",
-        };
-        for (size_t i = 1; i < 5; ++i) {
-            void* character_data = nullptr;
-            size_t character_size = 0;
-            if (Assets::GetInstance().GetAssetData(character_assets[i], character_data,
-                                                   character_size)) {
-                character_animations_[i] =
-                    std::make_unique<LvglRawImage>(character_data, character_size);
-            }
-        }
-        for (size_t i = 0; i < kIdleFrameCount; ++i) {
-            char asset_name[32];
-            snprintf(asset_name, sizeof(asset_name), "home_idle_frame_%03u.png",
-                     static_cast<unsigned>(i + 24));
-            void* idle_data = nullptr;
-            size_t idle_size = 0;
-            if (Assets::GetInstance().GetAssetData(asset_name, idle_data, idle_size)) {
-                idle_frames_[i] = std::make_unique<LvglRawImage>(idle_data, idle_size);
-            }
-        }
         lv_obj_move_background(scene);
 
         network_label_ = lv_label_create(top_bar_);
@@ -845,38 +1391,75 @@ public:
         ApplyHomeStatusBarStyle();
 
         pet_hud_panel_ = lv_obj_create(screen);
-        lv_obj_set_size(pet_hud_panel_, 220, 74);
+        lv_obj_set_size(pet_hud_panel_, 260, 80);
         lv_obj_set_style_radius(pet_hud_panel_, 0, 0);
         lv_obj_set_style_border_width(pet_hud_panel_, 0, 0);
         lv_obj_set_style_bg_opa(pet_hud_panel_, LV_OPA_TRANSP, 0);
         lv_obj_set_style_pad_all(pet_hud_panel_, 0, 0);
         lv_obj_remove_flag(pet_hud_panel_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_remove_flag(pet_hud_panel_, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(pet_hud_panel_, LV_ALIGN_TOP_LEFT, 18, 16);
+        lv_obj_align(pet_hud_panel_, LV_ALIGN_TOP_LEFT, 12, 12);
         if (home_hud_badge_ != nullptr) {
             auto* badge = lv_image_create(pet_hud_panel_);
             lv_image_set_src(badge, home_hud_badge_->image_dsc());
-            lv_obj_align(badge, LV_ALIGN_LEFT_MID, 0, 0);
+            lv_obj_align(badge, LV_ALIGN_LEFT_MID, 8, 0);
+        } else {
+            auto* badge = lv_obj_create(pet_hud_panel_);
+            lv_obj_set_size(badge, 58, 58);
+            lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_border_width(badge, 2, 0);
+            lv_obj_set_style_border_color(badge, lv_color_hex(0xCDAA63), 0);
+            lv_obj_set_style_bg_color(badge, lv_color_hex(0x174C43), 0);
+            lv_obj_set_style_pad_all(badge, 0, 0);
+            lv_obj_remove_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_remove_flag(badge, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_align(badge, LV_ALIGN_LEFT_MID, 8, 0);
+
+            auto* badge_icon = lv_label_create(badge);
+            lv_label_set_text(badge_icon, MATERIAL_SYMBOLS_PERSON);
+            lv_obj_set_style_text_font(badge_icon, icon_font, 0);
+            lv_obj_set_style_text_color(badge_icon, lv_color_hex(0xE8C986), 0);
+            lv_obj_center(badge_icon);
         }
 
-        pet_title_label_ = lv_label_create(pet_hud_panel_);
-        lv_label_set_text(pet_title_label_, "随身洞府 · 无名幼灵");
-        lv_obj_set_style_text_color(pet_title_label_, lv_color_hex(0xE8C986), 0);
-        lv_label_set_text(pet_title_label_, "炼气三层");
-        lv_obj_set_style_text_font(pet_title_label_, text_font, 0);
-        lv_obj_set_style_transform_scale(pet_title_label_, 190, 0);
-        lv_obj_align(pet_title_label_, LV_ALIGN_TOP_LEFT, 76, 2);
+        if (home_realm_tag_ != nullptr) {
+            auto* realm_tag = lv_image_create(pet_hud_panel_);
+            lv_image_set_src(realm_tag, home_realm_tag_->image_dsc());
+            lv_obj_align(realm_tag, LV_ALIGN_BOTTOM_LEFT, 14, -1);
+        } else {
+            auto* realm_tag = lv_label_create(pet_hud_panel_);
+            lv_label_set_text(realm_tag, "境界");
+            lv_obj_set_style_text_color(realm_tag, lv_color_hex(0xF3DC9A), 0);
+            lv_obj_align(realm_tag, LV_ALIGN_BOTTOM_LEFT, 14, -1);
+        }
+
+        if (home_realm_title_ != nullptr) {
+            auto* realm_title = lv_image_create(pet_hud_panel_);
+            lv_image_set_src(realm_title, home_realm_title_->image_dsc());
+            lv_obj_align(realm_title, LV_ALIGN_TOP_LEFT, 72, 4);
+            if (home_realm_layer_ != nullptr) {
+                auto* realm_layer = lv_image_create(pet_hud_panel_);
+                lv_image_set_src(realm_layer, home_realm_layer_->image_dsc());
+                lv_obj_align(realm_layer, LV_ALIGN_TOP_LEFT, 168, 15);
+            }
+        } else {
+            pet_title_label_ = lv_label_create(pet_hud_panel_);
+            lv_label_set_text(pet_title_label_, "炼气三层");
+            lv_obj_set_style_text_color(pet_title_label_, lv_color_hex(0xF3DC9A), 0);
+            lv_obj_align(pet_title_label_, LV_ALIGN_TOP_LEFT, 72, 4);
+        }
 
         pet_state_label_ = lv_label_create(pet_hud_panel_);
-        lv_obj_set_width(pet_state_label_, 132);
+        lv_obj_set_width(pet_state_label_, 176);
         lv_label_set_long_mode(pet_state_label_, LV_LABEL_LONG_DOT);
         lv_obj_set_style_text_align(pet_state_label_, LV_TEXT_ALIGN_LEFT, 0);
         lv_label_set_text(pet_state_label_, "灵宠正在陪伴你");
         lv_obj_set_style_text_color(pet_state_label_, lv_color_hex(0xAFA58F), 0);
-        lv_label_set_text(pet_state_label_, "洞府灵息平稳");
+        lv_label_set_text(pet_state_label_, "");
         lv_obj_set_style_text_color(pet_state_label_, lv_color_hex(0x9FC8BD), 0);
         lv_obj_set_style_transform_scale(pet_state_label_, 185, 0);
-        lv_obj_align(pet_state_label_, LV_ALIGN_TOP_LEFT, 76, 52);
+        lv_obj_align(pet_state_label_, LV_ALIGN_TOP_LEFT, 80, 61);
+        lv_obj_add_flag(pet_state_label_, LV_OBJ_FLAG_HIDDEN);
         status_label_ = pet_state_label_;
 
         pet_stats_label_ = lv_label_create(pet_hud_panel_);
@@ -884,10 +1467,12 @@ public:
         lv_label_set_text(pet_stats_label_, "修为 0    精力 100\n心境 50    灵石 0");
         lv_obj_set_style_text_align(pet_stats_label_, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_color(pet_stats_label_, lv_color_hex(0xD7C8A6), 0);
-        lv_obj_set_width(pet_stats_label_, 220);
-        lv_label_set_text(pet_stats_label_, "0 / 100        0");
-        lv_obj_set_style_text_align(pet_stats_label_, LV_TEXT_ALIGN_LEFT, 0);
-        lv_obj_align(pet_stats_label_, LV_ALIGN_TOP_LEFT, 26, 34);
+        lv_obj_set_width(pet_stats_label_, 74);
+        lv_label_set_text(pet_stats_label_, "0 / 100");
+        lv_obj_set_style_text_align(pet_stats_label_, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_set_style_text_color(pet_stats_label_, lv_color_hex(0xFFF0C9), 0);
+        lv_obj_set_style_transform_scale(pet_stats_label_, 150, 0);
+        lv_obj_align(pet_stats_label_, LV_ALIGN_TOP_LEFT, 164, 44);
         lv_obj_add_flag(pet_stats_label_, LV_OBJ_FLAG_HIDDEN);
 
         auto* cultivation_track = lv_obj_create(screen);
@@ -900,15 +1485,16 @@ public:
         lv_obj_remove_flag(cultivation_track, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_remove_flag(cultivation_track, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_parent(cultivation_track, pet_hud_panel_);
-        lv_obj_set_size(cultivation_track, 132, 7);
-        lv_obj_align(cultivation_track, LV_ALIGN_TOP_LEFT, 76, 38);
+        lv_obj_set_size(cultivation_track, 172, 15);
+        lv_obj_align(cultivation_track, LV_ALIGN_TOP_LEFT, 72, 44);
 
         cultivation_fill_ = lv_obj_create(cultivation_track);
-        lv_obj_set_size(cultivation_fill_, 1, 4);
+        lv_obj_set_size(cultivation_fill_, 1, 11);
         lv_obj_set_style_radius(cultivation_fill_, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_border_width(cultivation_fill_, 0, 0);
         lv_obj_set_style_bg_color(cultivation_fill_, lv_color_hex(0x65D8C7), 0);
         lv_obj_align(cultivation_fill_, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_move_foreground(pet_stats_label_);
 
         pet_avatar_ = lv_obj_create(screen);
         lv_obj_set_size(pet_avatar_, 138, 138);
@@ -949,6 +1535,10 @@ public:
         lv_obj_remove_flag(pet_character_image_, LV_OBJ_FLAG_CLICKABLE);
         // Use a fixed foot line on the main stone road; X is the object's left edge.
         lv_obj_set_pos(pet_character_image_, 100, kCharacterGroundY - kCharacterHeight);
+        pet_weapon_image_ = lv_image_create(screen);
+        lv_obj_remove_flag(pet_weapon_image_, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(pet_weapon_image_, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_flag(pet_weapon_image_, LV_OBJ_FLAG_HIDDEN);
         StartIdleAnimation();
 
         pet_dialog_panel_ = lv_obj_create(screen);
@@ -983,7 +1573,7 @@ public:
         lv_obj_add_flag(pet_dialog_label_, LV_OBJ_FLAG_HIDDEN);
 
         pet_actions_ = lv_obj_create(screen);
-        lv_obj_set_size(pet_actions_, 456, 104);
+        lv_obj_set_size(pet_actions_, 456, kActionButtonHeight);
         lv_obj_set_style_bg_opa(pet_actions_, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(pet_actions_, 0, 0);
         lv_obj_set_style_pad_all(pet_actions_, 0, 0);
@@ -995,10 +1585,47 @@ public:
         lv_obj_remove_flag(pet_actions_, LV_OBJ_FLAG_CLICKABLE);
         // Keep the large controls below the character's walking lane.
         lv_obj_align(pet_actions_, LV_ALIGN_BOTTOM_MID, 0, -10);
-        CreateActionButton(pet_actions_, 0, "修炼", PetAction::kBreathing);
-        CreateActionButton(pet_actions_, 1, "游历", PetAction::kJourney);
-        CreateActionButton(pet_actions_, 2, "收获", PetAction::kClaim);
-        CreateActionButton(pet_actions_, 3, "札记", PetAction::kTalk);
+        CreateActionButton(pet_actions_, 0, "历练", MATERIAL_SYMBOLS_EXPLORE,
+                           PetAction::kJourney, icon_font);
+        CreateActionButton(pet_actions_, 1, "修炼", MATERIAL_SYMBOLS_STAR,
+                           PetAction::kBreathing, icon_font);
+        CreateActionButton(pet_actions_, 2, "札记", MATERIAL_SYMBOLS_EDIT_SQUARE,
+                           PetAction::kTalk, icon_font);
+        CreateActionButton(pet_actions_, 3, "商城", MATERIAL_SYMBOLS_DOWNLOAD,
+                           PetAction::kClaim, icon_font);
+
+        gender_selection_overlay_ = lv_obj_create(screen);
+        lv_obj_set_size(gender_selection_overlay_, 480, 480);
+        lv_obj_set_style_radius(gender_selection_overlay_, 0, 0);
+        lv_obj_set_style_border_width(gender_selection_overlay_, 0, 0);
+        lv_obj_set_style_bg_color(gender_selection_overlay_, lv_color_hex(0x071B18), 0);
+        lv_obj_set_style_bg_opa(gender_selection_overlay_, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_all(gender_selection_overlay_, 0, 0);
+        lv_obj_remove_flag(gender_selection_overlay_, LV_OBJ_FLAG_SCROLLABLE);
+
+        auto* gender_title = lv_label_create(gender_selection_overlay_);
+        lv_label_set_text(gender_title, "选择修仙人物");
+        lv_obj_set_style_text_color(gender_title, lv_color_hex(0xE8C986), 0);
+        lv_obj_align(gender_title, LV_ALIGN_TOP_MID, 0, 78);
+
+        auto* gender_hint = lv_label_create(gender_selection_overlay_);
+        lv_label_set_text(gender_hint, "选择初始形象，后续外观由兵器改变");
+        lv_obj_set_style_text_color(gender_hint, lv_color_hex(0x9FC8BD), 0);
+        lv_obj_set_style_transform_scale(gender_hint, 190, 0);
+        lv_obj_align(gender_hint, LV_ALIGN_TOP_MID, 0, 132);
+
+        CreateGenderButton(gender_selection_overlay_, 0, "男",
+                           immortal_pet::CharacterGender::kMale, -92);
+        CreateGenderButton(gender_selection_overlay_, 1, "女",
+                           immortal_pet::CharacterGender::kFemale, 92);
+
+        gender_selection_message_ = lv_label_create(gender_selection_overlay_);
+        lv_label_set_text(gender_selection_message_, "首次选择后将自动保存");
+        lv_obj_set_style_text_color(gender_selection_message_, lv_color_hex(0xAFA58F), 0);
+        lv_obj_align(gender_selection_message_, LV_ALIGN_BOTTOM_MID, 0, -64);
+        if (!gender_selection_requested_) {
+            lv_obj_add_flag(gender_selection_overlay_, LV_OBJ_FLAG_HIDDEN);
+        }
 
         low_battery_popup_ = lv_obj_create(screen);
         lv_obj_set_size(low_battery_popup_, 420, 52);
@@ -1012,6 +1639,9 @@ public:
         lv_obj_add_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
 
         lv_obj_move_foreground(pet_actions_);
+        if (gender_selection_requested_ && gender_selection_overlay_ != nullptr) {
+            lv_obj_move_foreground(gender_selection_overlay_);
+        }
         lv_display_add_event_cb(display_, rounder_event_cb, LV_EVENT_INVALIDATE_AREA, NULL);
 #endif
     }
@@ -1076,16 +1706,39 @@ public:
         action_handler_ = std::move(handler);
     }
 
-    bool LoadFemaleInitialAnimationsFromSd() {
-        if (!LoadFemaleInitialFramesFromSd(6, 0)) {
-            ESP_LOGW(TAG, "Female initial animations not loaded from SD card");
-            return false;
+    void SetGenderSelectionHandler(
+        std::function<bool(immortal_pet::CharacterGender)> handler) {
+        gender_selection_handler_ = std::move(handler);
+    }
+
+    void ShowGenderSelection() {
+        gender_selection_requested_ = true;
+        DisplayLockGuard lock(this);
+        if (gender_selection_message_ != nullptr) {
+            lv_label_set_text(gender_selection_message_, "首次选择后将自动保存");
         }
-        female_initial_loaded_ = true;
-        StartIdleAnimation();
-        StartAutonomousBehavior();
-        ESP_LOGI(TAG, "Female initial stand and walk animations loaded from SD card");
-        return true;
+        if (gender_selection_overlay_ != nullptr) {
+            lv_obj_remove_flag(gender_selection_overlay_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(gender_selection_overlay_);
+        }
+    }
+
+    bool LoadCharacterAnimationsFromSd(immortal_pet::CharacterGender gender) {
+#if CONFIG_IMMORTAL_PET_LAYERED_ASSET_TEST
+        if (LoadLayeredActorFromSd(gender, 0)) {
+#else
+        if (LoadLayeredActorFromSd(gender)) {
+#endif
+            female_initial_loaded_ = true;
+            layered_stand_direction_ = 6;
+            layered_walk_direction_ = 0;
+            StartIdleAnimation();
+            StartAutonomousBehavior();
+            ESP_LOGI(TAG, "Layered character animations loaded from SD card (unarmed)");
+            return true;
+        }
+        ESP_LOGW(TAG, "Layered character animations not loaded from SD card");
+        return false;
     }
 
     bool LoadDongfuSceneFromSd() {
@@ -1130,6 +1783,34 @@ public:
         return true;
     }
 
+    void LoadHomepageDecorationsFromSd() {
+        constexpr const char* kRoot = "/sdcard/immortal_pet/home";
+        static constexpr const char* kActionFiles[] = {
+            "home_menu_journey_v3.png",
+            "home_menu_cultivate_v3.png",
+            "home_menu_journal_v3.png",
+            "home_menu_shop_v3.png",
+        };
+
+        char path[128];
+        for (size_t i = 0; i < 4; ++i) {
+            snprintf(path, sizeof(path), "%s/%s", kRoot, kActionFiles[i]);
+            LoadHomepageImageFromSd(path, home_action_backgrounds_[i]);
+        }
+        snprintf(path, sizeof(path), "%s/home_hud_badge_v3.png", kRoot);
+        LoadHomepageImageFromSd(path, home_hud_badge_);
+        snprintf(path, sizeof(path), "%s/home_dialog_bubble_v2.png", kRoot);
+        LoadHomepageImageFromSd(path, home_dialog_background_);
+        // The current profile begins at 炼气三层. Future breakthrough logic will select
+        // the matching realm title asset instead of keeping all titles resident.
+        snprintf(path, sizeof(path), "%s/home_realm_qi_refining_v2.png", kRoot);
+        LoadHomepageImageFromSd(path, home_realm_title_);
+        snprintf(path, sizeof(path), "%s/home_realm_layer_3_v2.png", kRoot);
+        LoadHomepageImageFromSd(path, home_realm_layer_);
+        snprintf(path, sizeof(path), "%s/home_realm_tag_v2.png", kRoot);
+        LoadHomepageImageFromSd(path, home_realm_tag_);
+    }
+
     void SetTfCardMounted(bool mounted) {
         tf_card_mounted_ = mounted;
         DisplayLockGuard lock(this);
@@ -1143,6 +1824,13 @@ public:
         }
     }
 
+    void SetTfGameContentReady(bool ready, const char* error = nullptr) {
+        tf_game_content_ready_ = ready;
+        if (error != nullptr) {
+            tf_game_content_error_ = error;
+        }
+    }
+
     void UpdatePetStats(const immortal_pet::GameState& state) {
         DisplayLockGuard lock(this);
         if (pet_stats_label_ == nullptr) {
@@ -1153,12 +1841,11 @@ public:
             "\n心境 " + std::to_string(state.mood) +
             "    灵石 " + std::to_string(state.spirit_stones);
         lv_label_set_text(pet_stats_label_, text.c_str());
-        const std::string home_text = std::to_string(state.cultivation) +
-            " / 100        " + std::to_string(state.spirit_stones);
+        const std::string home_text = std::to_string(state.cultivation) + " / 100";
         lv_label_set_text(pet_stats_label_, home_text.c_str());
         if (cultivation_fill_ != nullptr) {
             constexpr uint32_t kCultivationCap = 100;
-            constexpr int32_t kTrackInnerWidth = 130;
+            constexpr int32_t kTrackInnerWidth = 168;
             const uint32_t cultivation = std::min(state.cultivation, kCultivationCap);
             const int32_t fill_width = std::max<int32_t>(1, static_cast<int32_t>(
                 (cultivation * kTrackInnerWidth) / kCultivationCap));
@@ -1314,6 +2001,7 @@ private:
 
 #if CONFIG_IMMORTAL_PET_V2
     immortal_pet::GameEngine game_engine_;
+    immortal_pet::PlayerProfile player_profile_;
     std::mutex game_mutex_;
     sdmmc_card_t* tf_card_ = nullptr;
     bool tf_card_mounted_ = false;
@@ -1687,9 +2375,38 @@ public:
         InitializeDisplay();
 #if CONFIG_IMMORTAL_PET_V2
         display_->SetTfCardMounted(tf_card_mounted_);
+        const auto character_gender = player_profile_.LoadGender();
+        display_->SetGenderSelectionHandler(
+            [this](immortal_pet::CharacterGender gender) {
+                if (!player_profile_.SaveGender(gender)) {
+                    ESP_LOGE(TAG, "Failed to save character gender");
+                    return false;
+                }
+                if (tf_card_mounted_ &&
+                    !display_->LoadCharacterAnimationsFromSd(gender)) {
+                    ESP_LOGW(TAG, "Saved character gender, but matching SD assets failed to load");
+                    return false;
+                }
+                return true;
+            });
+
+        bool tf_game_content_ready = false;
+        const char* tf_game_content_error = "未检测到可用的 TF 卡";
         if (tf_card_mounted_) {
-            display_->LoadDongfuSceneFromSd();
-            display_->LoadFemaleInitialAnimationsFromSd();
+            if (!display_->LoadDongfuSceneFromSd()) {
+                tf_game_content_error = "洞府场景素材加载失败";
+            } else if (character_gender != immortal_pet::CharacterGender::kUnset &&
+                       !display_->LoadCharacterAnimationsFromSd(character_gender)) {
+                tf_game_content_error = "人物素材加载失败";
+            } else {
+                display_->LoadHomepageDecorationsFromSd();
+                tf_game_content_ready = true;
+            }
+        }
+        display_->SetTfGameContentReady(tf_game_content_ready, tf_game_content_error);
+        if (tf_game_content_ready &&
+            character_gender == immortal_pet::CharacterGender::kUnset) {
+            display_->ShowGenderSelection();
         }
         display_->SetActionHandler([this](CustomLcdDisplay::PetAction action) {
             HandlePetAction(action);

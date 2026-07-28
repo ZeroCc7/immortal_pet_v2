@@ -40,7 +40,9 @@ set(SOURCES "audio/audio_codec.cc"
 set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "audio/demuxer" "protocols")
 
 if(CONFIG_IMMORTAL_PET_V2)
-    list(APPEND SOURCES "immortal_pet/game_engine.cpp")
+    list(APPEND SOURCES
+        "immortal_pet/game_engine.cpp"
+        "immortal_pet/player_profile.cpp")
 endif()
 
 # Add board common files
@@ -85,10 +87,8 @@ set(BUILTIN_TEXT_FONT font_noto_sans_basic_30_4)
 set(BUILTIN_ICON_FONT font_material_symbols_30_4)
 set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_64)
 
-if(CONFIG_IMMORTAL_PET_V2)
-    set(DEFAULT_ASSETS_EXTRA_FILES
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets/immortal_pet/home")
-endif()
+# Immortal Pet scenes, character animations, and menu artwork are supplied by the TF card.
+# Keep Flash for firmware, fonts, and the minimal TF-content error screen only.
 
 file(GLOB BOARD_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/boards/${MANUFACTURER}/${BOARD_TYPE}/*.cc

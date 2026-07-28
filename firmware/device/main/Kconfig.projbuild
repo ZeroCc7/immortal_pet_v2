@@ -122,6 +122,14 @@ config IMMORTAL_PET_V2
     help
         Enable the deterministic cultivation game core and its MCP tools.
 
+config IMMORTAL_PET_LAYERED_ASSET_TEST
+    bool "Cycle layered idle assets for device testing"
+    depends on IMMORTAL_PET_V2
+    default n
+    help
+        Load layered idle catalog entries in order and switch every ten seconds.
+        This is intended for visual inspection builds only.
+
 choice DISPLAY_STYLE
     prompt "Select display style"
     default USE_DEFAULT_MESSAGE_STYLE
