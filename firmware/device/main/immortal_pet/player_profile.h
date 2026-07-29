@@ -13,7 +13,9 @@ enum class CharacterGender : uint8_t {
 class PlayerProfile {
 public:
     CharacterGender LoadGender() const;
-    bool SaveGender(CharacterGender gender) const;
+    uint32_t LoadCreatedOn() const;
+    bool SaveNewProfile(CharacterGender gender, uint32_t created_on) const;
+    bool SaveCreatedOnIfMissing(uint32_t created_on) const;
 };
 
 }  // namespace immortal_pet

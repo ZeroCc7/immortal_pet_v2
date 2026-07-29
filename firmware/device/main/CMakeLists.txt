@@ -43,6 +43,8 @@ if(CONFIG_IMMORTAL_PET_V2)
     list(APPEND SOURCES
         "immortal_pet/game_clock.cpp"
         "immortal_pet/game_engine.cpp"
+        "immortal_pet/game_state_store.cpp"
+        "immortal_pet/pcf85063_rtc.cpp"
         "immortal_pet/player_profile.cpp")
 endif()
 
