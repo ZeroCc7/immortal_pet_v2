@@ -37,6 +37,7 @@ Read the closest existing implementation before adding a new one. Prefer the nar
 - Guard target-specific features with Kconfig/component rules. Do not assume every target has PSRAM or S3/P4 resources.
 - Do not manually edit generated/vendor output: `build/`, `releases/`, `managed_components/`, `components/`, `sdkconfig*`, `main/assets/lang_config.h`, or generated mmap headers.
 - Format only touched C/C++ files with the repository `.clang-format`; avoid unrelated mass formatting.
+- Keep board implementation files focused. The existing `esp32-s3-touch-amoled-2.16.cc` is already large; do not add new feature subsystems directly to it. For new Immortal Pet features, create focused `.h/.cc` modules under the board's `immortal_pet/` directory (or a common module when the feature is board-independent), then keep only initialization and narrow calls in the board file. Do not refactor the already working layered-idle implementation unless the requested feature requires it.
 
 ## Boards and Configuration
 
@@ -45,6 +46,72 @@ Board selection is a coupled chain:
 `config.json` -> `scripts/release.py` -> `main/Kconfig.projbuild` -> `main/CMakeLists.txt` -> board source and `config.h`.
 
 When adding a board or variant, update every relevant link in that chain. Include a unique board identity, correct chip target, flash/partition settings, exactly one `DECLARE_BOARD`, and board documentation. Follow `docs/custom-board.md`.
+
+## Local Build Restriction
+
+The project owner compiles, flashes, and monitors this firmware through the ESP-IDF extension in VS Code.
+
+- Agents must not run build, compile, link, flash, size, or firmware packaging commands in this workspace.
+- Do not invoke `idf.py`, `ninja`, CMake builds, `scripts/release.py`, compiler executables, or equivalent commands, even for verification.
+- Do not modify generated build state to simulate a test build.
+- Source inspection, focused file edits, asset generation, JSON validation, and non-compiling static checks remain allowed.
+- After a firmware change, report that compilation and physical-device validation are pending and give the project owner the relevant VS Code test behavior to observe.
+
+This local restriction overrides the build requirements in the Commands and Validation sections below.
+
+## Immortal Pet Stage 2 Gameplay Baseline
+
+For future Immortal Pet V2 gameplay work, `docs/development-phases.md`, section
+“第二阶段：三时段本地玩法”, is the authoritative V0 specification. Earlier documents that
+describe experience, independent levels, ten levels per realm, materials, energy, mood, bond,
+arbitrary activity timers, or a separate claim step are superseded.
+
+- V0 has only cultivation and spirit stones. Cultivation derives the realm display: zero hides
+  the realm, cultivation one starts Qi Refining layer one, every 100 cultivation advances one
+  layer, and every realm has 15 layers. Do not persist derived realm or layer values.
+- The periods are morning 05:00–10:59, noon 11:00–16:59, evening 17:00–22:59, and closed
+  23:00–04:59, using China Standard Time (UTC+8).
+- Each period accepts exactly one of cultivate, journey, or rest. Cultivate grants 20 cultivation;
+  journey grants 30 spirit stones; settlement is immediate after user confirmation.
+- Same-day repeated cultivate or journey rewards use 100%, 75%, then 50%. Manual and missed-period
+  rest both grant one non-stacking 125% bonus to the next successful reward action; the bonus may
+  survive a day boundary. Integer rewards round down.
+- Untrusted, invalid, or rolled-back time must not resolve missed periods, consume an action, or
+  mutate the game save. The home clock, day/night background, and gameplay periods must share one
+  trusted time source.
+- Complete board RTC support before enabling daily actions: network time updates the RTC, and a
+  valid RTC restores wall time during an offline cold boot.
+- Keep deterministic rules in a pure C++ module with no LVGL, NVS, network, TF-card, or board
+  dependencies. Keep persistence in a separate versioned NVS adapter and UI orchestration narrow.
+- For every mutation, compute a candidate state and commit it atomically before replacing the
+  in-memory state or updating the UI. A failed save must not grant a reward or consume a period.
+- The Stage 2 home actions are cultivate, journey, rest, and a read-only status entry. Require a
+  confirmation step before consuming a period. The fourth entry becomes the weapon shop in Stage 3.
+- AI, animations, and scenes may present a result but never calculate values, mutate authoritative
+  state, or trigger an additional settlement.
+- Add host-side deterministic tests for period boundaries, missed rest, repeated rewards, one-shot
+  rest bonus, day rollover, duplicate input, save failure, restart recovery, and clock rollback.
+  Agents still must not run compilation commands in this workspace; report the required VS Code
+  firmware and physical-device checks to the project owner.
+
+## Immortal Pet Layered Idle Animation
+
+The Immortal Pet V2 idle screen for
+`main/boards/waveshare/esp32-s3-touch-amoled-2.16/esp32-s3-touch-amoled-2.16.cc`
+assembles characters at runtime from SD-card layers.
+
+- Do not precompose or flatten character and weapon PNGs. Keep the body and weapon as separate LVGL image objects.
+- Runtime assets live under `/sdcard/immortal_pet/layered_idle/`; `catalog.json` selects a body and an optional weapon, while each asset's `actor.json` describes `stand` and `walk`.
+- Cross-animation composition must use the original Gbits `source_x` and `source_y` coordinates exported into runtime `actor.json` as `x` and `y`. Normalized per-animation `x` and `y` values must not be used to align a body with a weapon.
+- The body and weapon use the same action, direction, and frame index. Draw the body first and the weapon second.
+- Supported idle-screen directions are `stand` 5/6 and `walk` 0/4. Walking is autonomous; no manual directional controls are required.
+- For each selected direction, compute a shared horizontal bounding box across all body and weapon frames. Use the body layer's bottom edge, not the combined body-and-weapon bottom edge, as the road/foot anchor; a low-hanging weapon must not raise the body.
+- Both LVGL image layers must use `lv_image_set_pivot(image, 0, 0)` before scaling. The default center pivot moves differently sized body and weapon PNGs by different amounts and causes visible misalignment.
+- `layered_actor_x_` is the shared horizontal position for both layers. Movement updates this value, then redraws both layers from the same origin.
+- Both layers share `kCharacterGroundY`. Keep `kCharacterScale` and `kCharacterVerticalOffset` next to it as the direct physical-device tuning properties: scale uses 256 as the original size, and a positive vertical offset moves both layers downward.
+- Suits that already contain a weapon use a null weapon entry and must hide the independent weapon layer.
+- Load a replacement body and weapon completely before swapping them into the active character. If loading fails, keep the current character intact and use the existing fallback path.
+- Generate runtime assets with `scripts/immortal_pet/build_layered_idle_assets.py`. Preserve the user-owned raw PNGs and metadata under `docs/images/raw/`.
 
 ## Commands
 
