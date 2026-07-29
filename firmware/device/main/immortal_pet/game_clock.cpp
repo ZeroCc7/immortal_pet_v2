@@ -1,6 +1,5 @@
 #include "immortal_pet/game_clock.h"
 
-#include <cstdlib>
 #include <ctime>
 
 #include <esp_log.h>
@@ -17,9 +16,6 @@ constexpr int64_t kTrustedTimeSaveIntervalSeconds = 5 * 60;
 }  // namespace
 
 GameClock::GameClock() {
-    // POSIX TZ for China Standard Time (UTC+8, no DST).
-    setenv("TZ", "CST-8", 1);
-    tzset();
     LoadLastTrustedTime();
 }
 
@@ -36,6 +32,7 @@ GameTime GameClock::Now() {
     result.unix_seconds = static_cast<int64_t>(now);
     result.local_day = (local_time.tm_year + 1900) * 10000 +
         (local_time.tm_mon + 1) * 100 + local_time.tm_mday;
+    result.is_night = local_time.tm_hour < 7 || local_time.tm_hour >= 18;
     if (local_time.tm_hour >= 5 && local_time.tm_hour < 11) {
         result.period = DailyPeriod::kMorning;
     } else if (local_time.tm_hour >= 11 && local_time.tm_hour < 17) {

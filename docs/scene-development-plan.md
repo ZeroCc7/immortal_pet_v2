@@ -15,7 +15,9 @@
 
 ## 第一阶段：洞府
 
-- SD 卡运行背景：`immortal_pet/scenes/dongfu/background.png`，当前为 480x480，避免 PNG 解码缓存抖动。
+- SD 卡运行背景：`immortal_pet/scenes/dongfu/background_day.png` 与
+  `background_night.png`，均为 480x480。设备按中国标准时间在 18:00–07:00 使用夜景，
+  其余时间使用日景；时间未校准或检测到回拨时保持日景。
 - 960x480 原始横版图保留为 `background_panorama_960x480.png`，等分块镜头渲染器完成后再启用。
 - 女初始角色随机转向、随机选择目标横坐标、以左右行走帧抵达后停下。
 - 首页功能按钮只提示“该功能暂未开发”。

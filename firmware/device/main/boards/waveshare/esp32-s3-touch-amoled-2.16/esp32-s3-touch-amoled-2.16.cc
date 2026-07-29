@@ -173,7 +173,11 @@ private:
     using FemaleInitialFrames =
         std::array<std::unique_ptr<LvglAllocatedImage>, kFemaleInitialFrameCapacity>;
     std::unique_ptr<LvglRawImage> home_background_;
-    std::unique_ptr<LvglAllocatedImage> scene_background_;
+    std::unique_ptr<LvglAllocatedImage> scene_day_background_;
+    std::unique_ptr<LvglAllocatedImage> scene_night_background_;
+    bool scene_night_active_ = false;
+    bool scene_background_initialized_ = false;
+    immortal_pet::GameClock* game_clock_ = nullptr;
     std::unique_ptr<LvglAllocatedImage> home_action_backgrounds_[4];
     std::unique_ptr<LvglAllocatedImage> home_hud_badge_;
     std::unique_ptr<LvglAllocatedImage> home_dialog_background_;
@@ -226,6 +230,7 @@ private:
     lv_timer_t* walk_animation_timer_ = nullptr;
     lv_timer_t* autonomous_behavior_timer_ = nullptr;
     lv_timer_t* layered_actor_change_timer_ = nullptr;
+    lv_timer_t* scene_background_timer_ = nullptr;
     bool autonomous_walking_ = false;
     int walk_start_x_ = 0;
     int walk_target_x_ = 0;
@@ -238,7 +243,7 @@ private:
     static constexpr int kCharacterScale = 420;
     static constexpr int kActionButtonHeight = 104;
     // 调整人物与武器的整体高低位置。正数向下，负数向上，单位为屏幕像素。 40
-    static constexpr int kCharacterVerticalOffset = 20;
+    static constexpr int kCharacterVerticalOffset = 40;
     static constexpr int kCharacterGroundY = 333 + kCharacterVerticalOffset;
     static constexpr int kCharacterMinX = 4;
     static constexpr int kCharacterMaxX = 480 - kCharacterWidth - 4;
@@ -399,9 +404,7 @@ private:
 
     void ApplyHomeStatusBarStyle() {
         if (top_bar_ != nullptr) {
-            lv_obj_set_style_bg_color(top_bar_, lv_color_hex(0x062B25), 0);
-            lv_obj_set_style_bg_opa(top_bar_, LV_OPA_80, 0);
-            lv_obj_set_style_radius(top_bar_, 14, 0);
+            lv_obj_set_style_bg_opa(top_bar_, LV_OPA_TRANSP, 0);
         }
         const lv_color_t status_text_color = lv_color_hex(0xE4F6EC);
         if (network_label_ != nullptr) {
@@ -422,6 +425,15 @@ private:
         if (status_label_ != nullptr) {
             lv_obj_set_style_text_color(status_label_, status_text_color, 0);
         }
+    }
+
+    static bool IsClockStatus(const char* status) {
+        return status != nullptr && std::strlen(status) == 5 &&
+            status[0] >= '0' && status[0] <= '9' &&
+            status[1] >= '0' && status[1] <= '9' &&
+            status[2] == ':' &&
+            status[3] >= '0' && status[3] <= '9' &&
+            status[4] >= '0' && status[4] <= '9';
     }
 
     static bool ReadSdFile(const char* path, std::vector<uint8_t>& data) {
@@ -971,13 +983,25 @@ private:
         return true;
     }
 
-    void ApplyDongfuSceneBackground() {
-        if (scene_ == nullptr || scene_background_ == nullptr) {
+    void UpdateDongfuSceneBackground() {
+        if (scene_ == nullptr || scene_day_background_ == nullptr ||
+            scene_night_background_ == nullptr) {
             return;
         }
-        lv_obj_set_style_bg_image_src(scene_, scene_background_->image_dsc(), 0);
+        const auto game_time = game_clock_ == nullptr ? immortal_pet::GameTime{} : game_clock_->Now();
+        const bool use_night = game_time.synchronized && !game_time.clock_rolled_back &&
+            game_time.is_night;
+        if (scene_background_initialized_ && scene_night_active_ == use_night) {
+            return;
+        }
+        scene_night_active_ = use_night;
+        scene_background_initialized_ = true;
+        const auto* background = use_night ? scene_night_background_->image_dsc() :
+            scene_day_background_->image_dsc();
+        lv_obj_set_style_bg_image_src(scene_, background, 0);
         lv_obj_set_style_bg_image_opa(scene_, LV_OPA_COVER, 0);
         lv_obj_invalidate(scene_);
+        ESP_LOGI(TAG, "Dongfu scene switched to %s background", use_night ? "night" : "day");
     }
 
     void StartAutonomousBehavior() {
@@ -1429,17 +1453,17 @@ public:
         lv_obj_remove_flag(container_, LV_OBJ_FLAG_CLICKABLE);
 
         top_bar_ = lv_obj_create(screen);
-        lv_obj_set_size(top_bar_, 150, 28);
+        lv_obj_set_size(top_bar_, 480, 28);
         lv_obj_set_style_radius(top_bar_, 0, 0);
         lv_obj_set_style_border_width(top_bar_, 0, 0);
-        lv_obj_set_style_pad_left(top_bar_, 12, 0);
-        lv_obj_set_style_pad_right(top_bar_, 12, 0);
+        lv_obj_set_style_pad_left(top_bar_, 18, 0);
+        lv_obj_set_style_pad_right(top_bar_, 18, 0);
         lv_obj_set_style_pad_top(top_bar_, 0, 0);
         lv_obj_set_style_pad_bottom(top_bar_, 0, 0);
         lv_obj_set_style_bg_opa(top_bar_, LV_OPA_TRANSP, 0);
         lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(top_bar_, LV_ALIGN_TOP_RIGHT, -18, 14);
+        lv_obj_align(top_bar_, LV_ALIGN_TOP_MID, 0, 14);
 
         auto* scene = lv_obj_create(screen);
         scene_ = scene;
@@ -1452,18 +1476,18 @@ public:
         lv_obj_remove_flag(scene, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_align(scene, LV_ALIGN_TOP_MID, 0, 0);
 
-        ApplyDongfuSceneBackground();
+        UpdateDongfuSceneBackground();
         lv_obj_move_background(scene);
 
         network_label_ = lv_label_create(top_bar_);
         lv_label_set_text(network_label_, "");
         lv_obj_set_style_text_font(network_label_, icon_font, 0);
-        lv_obj_align(network_label_, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_align(network_label_, LV_ALIGN_RIGHT_MID, -74, 0);
 
         mute_label_ = lv_label_create(top_bar_);
         lv_label_set_text(mute_label_, "");
         lv_obj_set_style_text_font(mute_label_, icon_font, 0);
-        lv_obj_align(mute_label_, LV_ALIGN_RIGHT_MID, -82, 0);
+        lv_obj_add_flag(mute_label_, LV_OBJ_FLAG_HIDDEN);
 
         battery_label_ = lv_label_create(top_bar_);
         lv_label_set_text(battery_label_, "");
@@ -1473,19 +1497,19 @@ public:
         tf_card_label_ = lv_label_create(top_bar_);
         lv_label_set_text(tf_card_label_, MATERIAL_SYMBOLS_SD_CARD);
         lv_obj_set_style_text_font(tf_card_label_, icon_font, 0);
-        lv_obj_align(tf_card_label_, LV_ALIGN_RIGHT_MID, -42, 0);
+        lv_obj_align(tf_card_label_, LV_ALIGN_RIGHT_MID, -37, 0);
         lv_obj_add_flag(tf_card_label_, LV_OBJ_FLAG_HIDDEN);
         if (tf_card_mounted_) {
             lv_obj_remove_flag(tf_card_label_, LV_OBJ_FLAG_HIDDEN);
         }
 
         status_label_ = lv_label_create(top_bar_);
-        lv_obj_set_width(status_label_, 62);
+        lv_obj_set_width(status_label_, 80);
         lv_label_set_long_mode(status_label_, LV_LABEL_LONG_CLIP);
         lv_obj_set_style_text_align(status_label_, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_font(status_label_, text_font, 0);
-        lv_label_set_text(status_label_, "");
-        lv_obj_align(status_label_, LV_ALIGN_LEFT_MID, 22, 0);
+        lv_label_set_text(status_label_, "--:--");
+        lv_obj_align(status_label_, LV_ALIGN_CENTER, 0, 0);
 
         notification_label_ = lv_label_create(top_bar_);
         lv_obj_set_width(notification_label_, 0);
@@ -1831,6 +1855,10 @@ public:
     }
 
 #if CONFIG_IMMORTAL_PET_V2
+    void SetGameClock(immortal_pet::GameClock* game_clock) {
+        game_clock_ = game_clock;
+    }
+
     void SetActionHandler(std::function<void(PetAction)> handler) {
         action_handler_ = std::move(handler);
     }
@@ -1870,11 +1898,11 @@ public:
         return false;
     }
 
-    bool LoadDongfuSceneFromSd() {
-        constexpr const char* kBackgroundPath = "/sdcard/immortal_pet/scenes/dongfu/background.png";
-        FILE* file = fopen(kBackgroundPath, "rb");
+    bool LoadDongfuSceneBackgroundFromSd(
+        const char* path, std::unique_ptr<LvglAllocatedImage>& target) {
+        FILE* file = fopen(path, "rb");
         if (file == nullptr) {
-            ESP_LOGW(TAG, "Dongfu scene background missing: %s", kBackgroundPath);
+            ESP_LOGW(TAG, "Dongfu scene background missing: %s", path);
             return false;
         }
         fseek(file, 0, SEEK_END);
@@ -1882,7 +1910,7 @@ public:
         rewind(file);
         if (size <= 0) {
             fclose(file);
-            ESP_LOGW(TAG, "Dongfu scene background is empty");
+            ESP_LOGW(TAG, "Dongfu scene background is empty: %s", path);
             return false;
         }
         auto* data = static_cast<uint8_t*>(
@@ -1892,21 +1920,43 @@ public:
                 heap_caps_free(data);
             }
             fclose(file);
-            ESP_LOGW(TAG, "Failed to read Dongfu scene background");
+            ESP_LOGW(TAG, "Failed to read Dongfu scene background: %s", path);
             return false;
         }
         fclose(file);
         try {
-            scene_background_ = std::make_unique<LvglAllocatedImage>(data, static_cast<size_t>(size));
+            target = std::make_unique<LvglAllocatedImage>(data, static_cast<size_t>(size));
         } catch (...) {
             heap_caps_free(data);
-            ESP_LOGW(TAG, "Failed to decode Dongfu scene background");
+            ESP_LOGW(TAG, "Failed to decode Dongfu scene background: %s", path);
             return false;
         }
-        ApplyDongfuSceneBackground();
-        ESP_LOGI(TAG, "Dongfu scene background loaded from SD card: %dx%d",
-                 scene_background_->image_dsc()->header.w,
-                 scene_background_->image_dsc()->header.h);
+        ESP_LOGI(TAG, "Dongfu scene background loaded from SD card: %s (%dx%d)", path,
+                 target->image_dsc()->header.w, target->image_dsc()->header.h);
+        return true;
+    }
+
+    bool LoadDongfuSceneFromSd() {
+        constexpr const char* kDayBackgroundPath =
+            "/sdcard/immortal_pet/scenes/dongfu/background_day.png";
+        constexpr const char* kNightBackgroundPath =
+            "/sdcard/immortal_pet/scenes/dongfu/background_night.png";
+        std::unique_ptr<LvglAllocatedImage> day_background;
+        std::unique_ptr<LvglAllocatedImage> night_background;
+        if (!LoadDongfuSceneBackgroundFromSd(kDayBackgroundPath, day_background) ||
+            !LoadDongfuSceneBackgroundFromSd(kNightBackgroundPath, night_background)) {
+            return false;
+        }
+        scene_day_background_ = std::move(day_background);
+        scene_night_background_ = std::move(night_background);
+        scene_background_initialized_ = false;
+        UpdateDongfuSceneBackground();
+        if (scene_background_timer_ == nullptr) {
+            scene_background_timer_ = lv_timer_create([](lv_timer_t* timer) {
+                static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer))
+                    ->UpdateDongfuSceneBackground();
+            }, 60 * 60 * 1000, this);
+        }
         ESP_LOGI(TAG, "Free PSRAM after Dongfu background load: %u",
                  static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
         return true;
@@ -2047,7 +2097,18 @@ public:
 
     void SetStatus(const char* status) override {
         DisplayLockGuard lock(this);
-        if (pet_state_label_ == nullptr || status == nullptr) {
+        if (status == nullptr) {
+            return;
+        }
+        if (IsClockStatus(status)) {
+            if (status_label_ != nullptr) {
+                lv_label_set_text(status_label_, status);
+                lv_obj_remove_flag(status_label_, LV_OBJ_FLAG_HIDDEN);
+                last_status_update_time_ = std::chrono::system_clock::now();
+            }
+            return;
+        }
+        if (pet_state_label_ == nullptr) {
             return;
         }
         const char* pet_status = nullptr;
@@ -2522,6 +2583,7 @@ public:
         InitializeDisplay();
 #if CONFIG_IMMORTAL_PET_V2
         display_->SetTfCardMounted(tf_card_mounted_);
+        display_->SetGameClock(&game_clock_);
         const auto game_time = game_clock_.Now();
         if (!game_time.synchronized) {
             ESP_LOGW(TAG, "Game clock is waiting for server time synchronization");

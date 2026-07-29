@@ -9,6 +9,7 @@ enum class DailyPeriod : uint8_t { kUnavailable = 0, kMorning, kNoon, kEvening }
 struct GameTime {
     bool synchronized = false;
     bool clock_rolled_back = false;
+    bool is_night = false;
     int64_t unix_seconds = 0;
     int32_t local_day = 0;  // YYYYMMDD in China Standard Time.
     DailyPeriod period = DailyPeriod::kUnavailable;
