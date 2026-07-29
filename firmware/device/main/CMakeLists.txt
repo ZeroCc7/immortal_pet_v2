@@ -41,6 +41,7 @@ set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg"
 
 if(CONFIG_IMMORTAL_PET_V2)
     list(APPEND SOURCES
+        "immortal_pet/game_clock.cpp"
         "immortal_pet/game_engine.cpp"
         "immortal_pet/player_profile.cpp")
 endif()

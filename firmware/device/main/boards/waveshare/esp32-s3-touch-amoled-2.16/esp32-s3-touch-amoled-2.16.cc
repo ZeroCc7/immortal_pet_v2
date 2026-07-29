@@ -27,6 +27,7 @@
 #include "settings.h"
 
 #if CONFIG_IMMORTAL_PET_V2
+#include "immortal_pet/game_clock.h"
 #include "immortal_pet/game_engine.h"
 #include "immortal_pet/player_profile.h"
 #include "display/lvgl_display/lvgl_theme.h"
@@ -179,6 +180,7 @@ private:
     std::unique_ptr<LvglAllocatedImage> home_realm_title_;
     std::unique_ptr<LvglAllocatedImage> home_realm_layer_;
     std::unique_ptr<LvglAllocatedImage> home_realm_tag_;
+    uint8_t displayed_realm_layer_ = 0;
     std::array<std::unique_ptr<LvglRawImage>, kIdleFrameCount> idle_frames_;
     FemaleInitialFrames female_initial_idle_05_frames_;
     FemaleInitialFrames female_initial_idle_06_frames_;
@@ -397,7 +399,9 @@ private:
 
     void ApplyHomeStatusBarStyle() {
         if (top_bar_ != nullptr) {
-            lv_obj_set_style_bg_opa(top_bar_, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_bg_color(top_bar_, lv_color_hex(0x062B25), 0);
+            lv_obj_set_style_bg_opa(top_bar_, LV_OPA_80, 0);
+            lv_obj_set_style_radius(top_bar_, 14, 0);
         }
         const lv_color_t status_text_color = lv_color_hex(0xE4F6EC);
         if (network_label_ != nullptr) {
@@ -414,6 +418,9 @@ private:
         }
         if (notification_label_ != nullptr) {
             lv_obj_set_style_text_color(notification_label_, status_text_color, 0);
+        }
+        if (status_label_ != nullptr) {
+            lv_obj_set_style_text_color(status_label_, status_text_color, 0);
         }
     }
 
@@ -571,6 +578,92 @@ private:
             ESP_LOGW(TAG, "Failed to decode homepage decoration: %s", path);
             return false;
         }
+    }
+
+    static uint8_t CultivationRealmLayer(uint32_t cultivation) {
+        constexpr uint32_t kCultivationPerLayer = 100;
+        constexpr uint8_t kRealmCount = 8;
+        constexpr uint8_t kLayersPerRealm = 15;
+        constexpr uint8_t kMaxRealmLayer = kRealmCount * kLayersPerRealm;
+        if (cultivation == 0) {
+            return 0;
+        }
+        return static_cast<uint8_t>(std::min<uint32_t>(
+            (cultivation - 1) / kCultivationPerLayer + 1, kMaxRealmLayer));
+    }
+
+    static const char* RealmAssetForLayer(uint8_t realm_layer) {
+        static constexpr const char* kRealmAssets[] = {
+            "home_realm_qi_refining_v2.png",
+            "home_realm_foundation_v2.png",
+            "home_realm_golden_core_v2.png",
+            "home_realm_nascent_soul_v2.png",
+            "home_realm_spirit_transformation_v2.png",
+            "home_realm_body_integration_v2.png",
+            "home_realm_great_vehicle_v2.png",
+            "home_realm_tribulation_v2.png",
+        };
+        if (realm_layer == 0) {
+            return nullptr;
+        }
+        return kRealmAssets[std::min<size_t>((realm_layer - 1) / 15,
+                                              sizeof(kRealmAssets) / sizeof(kRealmAssets[0]) - 1)];
+    }
+
+    void RefreshRealmImages() {
+        if (pet_hud_panel_ == nullptr) {
+            return;
+        }
+        if (pet_realm_title_ != nullptr) {
+            lv_obj_delete(pet_realm_title_);
+            pet_realm_title_ = nullptr;
+            pet_title_label_ = nullptr;
+        }
+        if (pet_realm_layer_ != nullptr) {
+            lv_obj_delete(pet_realm_layer_);
+            pet_realm_layer_ = nullptr;
+        }
+        if (home_realm_title_ != nullptr) {
+            auto* title = lv_image_create(pet_hud_panel_);
+            lv_image_set_src(title, home_realm_title_->image_dsc());
+            lv_obj_align(title, LV_ALIGN_TOP_LEFT, 72, 4);
+            lv_obj_add_flag(title, LV_OBJ_FLAG_HIDDEN);
+            pet_realm_title_ = title;
+        }
+        if (home_realm_layer_ != nullptr) {
+            auto* layer = lv_image_create(pet_hud_panel_);
+            lv_image_set_src(layer, home_realm_layer_->image_dsc());
+            lv_obj_align(layer, LV_ALIGN_TOP_LEFT, 168, 15);
+            lv_obj_add_flag(layer, LV_OBJ_FLAG_HIDDEN);
+            pet_realm_layer_ = layer;
+        }
+    }
+
+    bool LoadRealmArtworkForLayer(uint8_t realm_layer) {
+        const char* realm_asset = RealmAssetForLayer(realm_layer);
+        if (realm_asset == nullptr) {
+            return false;
+        }
+        char realm_path[128];
+        char layer_path[128];
+        snprintf(realm_path, sizeof(realm_path), "/sdcard/immortal_pet/home/%s", realm_asset);
+        snprintf(layer_path, sizeof(layer_path),
+                 "/sdcard/immortal_pet/home/home_realm_layer_%02u_v1.png",
+                 static_cast<unsigned>((realm_layer - 1) % 15 + 1));
+
+        std::unique_ptr<LvglAllocatedImage> realm_image;
+        std::unique_ptr<LvglAllocatedImage> layer_image;
+        if (!LoadHomepageImageFromSd(realm_path, realm_image) ||
+            !LoadHomepageImageFromSd(layer_path, layer_image)) {
+            ESP_LOGW(TAG, "Realm artwork unavailable for layer %u",
+                     static_cast<unsigned>(realm_layer));
+            return false;
+        }
+        home_realm_title_ = std::move(realm_image);
+        home_realm_layer_ = std::move(layer_image);
+        RefreshRealmImages();
+        displayed_realm_layer_ = realm_layer;
+        return true;
     }
 
     bool LoadLayeredActorFromSd(immortal_pet::CharacterGender gender,
@@ -1386,6 +1479,14 @@ public:
             lv_obj_remove_flag(tf_card_label_, LV_OBJ_FLAG_HIDDEN);
         }
 
+        status_label_ = lv_label_create(top_bar_);
+        lv_obj_set_width(status_label_, 62);
+        lv_label_set_long_mode(status_label_, LV_LABEL_LONG_CLIP);
+        lv_obj_set_style_text_align(status_label_, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_font(status_label_, text_font, 0);
+        lv_label_set_text(status_label_, "");
+        lv_obj_align(status_label_, LV_ALIGN_LEFT_MID, 22, 0);
+
         notification_label_ = lv_label_create(top_bar_);
         lv_obj_set_width(notification_label_, 0);
         lv_label_set_long_mode(notification_label_, LV_LABEL_LONG_DOT);
@@ -1472,7 +1573,6 @@ public:
         lv_obj_set_style_transform_scale(pet_state_label_, 185, 0);
         lv_obj_align(pet_state_label_, LV_ALIGN_TOP_LEFT, 80, 61);
         lv_obj_add_flag(pet_state_label_, LV_OBJ_FLAG_HIDDEN);
-        status_label_ = pet_state_label_;
 
         pet_stats_label_ = lv_label_create(pet_hud_panel_);
         lv_obj_set_width(pet_stats_label_, 390);
@@ -1702,6 +1802,9 @@ public:
         if (pet_dialog_label_ != nullptr) {
             lv_obj_set_style_text_font(pet_dialog_label_, text_font, 0);
         }
+        if (status_label_ != nullptr) {
+            lv_obj_set_style_text_font(status_label_, text_font, 0);
+        }
         if (pet_face_label_ != nullptr) {
             lv_obj_set_style_text_font(pet_face_label_, text_font, 0);
         }
@@ -1827,12 +1930,6 @@ public:
         LoadHomepageImageFromSd(path, home_hud_badge_);
         snprintf(path, sizeof(path), "%s/home_dialog_bubble_v2.png", kRoot);
         LoadHomepageImageFromSd(path, home_dialog_background_);
-        // The first cultivation gain enters 炼气一层. Future breakthrough logic will select
-        // the matching layer asset instead of keeping every layer resident.
-        snprintf(path, sizeof(path), "%s/home_realm_qi_refining_v2.png", kRoot);
-        LoadHomepageImageFromSd(path, home_realm_title_);
-        snprintf(path, sizeof(path), "%s/home_realm_layer_01_v1.png", kRoot);
-        LoadHomepageImageFromSd(path, home_realm_layer_);
         snprintf(path, sizeof(path), "%s/home_realm_tag_v2.png", kRoot);
         LoadHomepageImageFromSd(path, home_realm_tag_);
     }
@@ -1869,7 +1966,11 @@ public:
         lv_label_set_text(pet_stats_label_, text.c_str());
         const std::string home_text = std::to_string(state.cultivation) + " / 100";
         lv_label_set_text(pet_stats_label_, home_text.c_str());
-        const bool cultivation_started = state.cultivation > 0;
+        const uint8_t realm_layer = CultivationRealmLayer(state.cultivation);
+        if (realm_layer != 0 && realm_layer != displayed_realm_layer_) {
+            LoadRealmArtworkForLayer(realm_layer);
+        }
+        const bool cultivation_started = realm_layer != 0;
         auto set_realm_visible = [cultivation_started](lv_obj_t* object) {
             if (object == nullptr) {
                 return;
@@ -2046,6 +2147,7 @@ private:
 
 #if CONFIG_IMMORTAL_PET_V2
     immortal_pet::GameEngine game_engine_;
+    immortal_pet::GameClock game_clock_;
     immortal_pet::PlayerProfile player_profile_;
     std::mutex game_mutex_;
     sdmmc_card_t* tf_card_ = nullptr;
@@ -2420,6 +2522,15 @@ public:
         InitializeDisplay();
 #if CONFIG_IMMORTAL_PET_V2
         display_->SetTfCardMounted(tf_card_mounted_);
+        const auto game_time = game_clock_.Now();
+        if (!game_time.synchronized) {
+            ESP_LOGW(TAG, "Game clock is waiting for server time synchronization");
+        } else if (game_time.clock_rolled_back) {
+            ESP_LOGW(TAG, "Game clock detected a system-time rollback");
+        } else {
+            ESP_LOGI(TAG, "Game clock ready: day=%d period=%s", game_time.local_day,
+                     immortal_pet::GameClock::PeriodName(game_time.period));
+        }
         const auto character_gender = player_profile_.LoadGender();
         display_->SetGenderSelectionHandler(
             [this](immortal_pet::CharacterGender gender) {
