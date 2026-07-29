@@ -1644,7 +1644,8 @@ public:
         lv_obj_set_style_text_align(status_label_, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_font(status_label_, text_font, 0);
         lv_label_set_text(status_label_, "--:--");
-        lv_obj_align(status_label_, LV_ALIGN_RIGHT_MID, -87, 0);
+        // Keep a visible gap before the Wi-Fi icon at the right side of the top bar.
+        lv_obj_align(status_label_, LV_ALIGN_RIGHT_MID, -105, 0);
 
         notification_label_ = lv_label_create(top_bar_);
         lv_obj_set_width(notification_label_, 0);
