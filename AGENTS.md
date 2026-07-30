@@ -62,40 +62,35 @@ The project owner compiles, flashes, and monitors this firmware through the ESP-
 
 This local restriction overrides the build requirements in the Commands and Validation sections below.
 
-## Immortal Pet Stage 2 Gameplay Baseline
+## Immortal Pet Gameplay Baseline
 
-For future Immortal Pet V2 gameplay work, `docs/development-phases.md`, section
-“第二阶段：三时段本地玩法”, is the authoritative V0 specification. Earlier documents that
-describe experience, independent levels, ten levels per realm, materials, energy, mood, bond,
-arbitrary activity timers, or a separate claim step are superseded.
+For future Immortal Pet V2 gameplay work, `docs/development-phases.md` is the authoritative V0
+specification. The confirmed progression model is energy plus timed activities, not the abandoned
+morning/noon/evening action system.
 
-- V0 has only cultivation and spirit stones. Cultivation derives the realm display: zero hides
-  the realm, cultivation one starts Qi Refining layer one, every 100 cultivation advances one
-  layer, and every realm has 15 layers. Do not persist derived realm or layer values.
-- The periods are morning 05:00–10:59, noon 11:00–16:59, evening 17:00–22:59, and closed
-  23:00–04:59, using China Standard Time (UTC+8).
-- Each period accepts exactly one of cultivate, journey, or rest. Cultivate grants 20 cultivation;
-  journey grants 30 spirit stones; settlement is immediate after user confirmation.
-- Same-day repeated cultivate or journey rewards use 100%, 75%, then 50%. Manual and missed-period
-  rest both grant one non-stacking 125% bonus to the next successful reward action; the bonus may
-  survive a day boundary. Integer rewards round down.
-- Untrusted, invalid, or rolled-back time must not resolve missed periods, consume an action, or
-  mutate the game save. The home clock, day/night background, and gameplay periods must share one
-  trusted time source.
-- Complete board RTC support before enabling daily actions: network time updates the RTC, and a
-  valid RTC restores wall time during an offline cold boot.
+- The authoritative state is cultivation, spirit stones, energy, an active activity and its trusted
+  timestamps, the energy recovery anchor, and any deterministic activity event. Do not add
+  independent experience, levels, mood, bond, materials, or derived realm/layer fields.
+- Cultivation derives the realm display: zero hides the realm, cultivation one starts Qi Refining
+  layer one, every 100 cultivation advances one layer, and every realm has 15 layers.
+- Energy is capped at 100 and recovers at the rate defined by `GameEngine`. Cultivation lasts five
+  minutes, costs ten energy at start, and automatically settles once when it ends; there is no
+  player-facing claim step. Journey reuses the timed-activity lifecycle but does not consume energy
+  or spirit stones; its per-monster rewards are defined by the selected stage.
+- Time must be trusted: network time updates the RTC, a valid RTC restores wall time during an
+  offline cold boot, and a rolled-back or invalid clock must not settle an activity or mutate saves.
+  The home clock, day/night background, activity recovery, and activity settlement share this source.
 - Keep deterministic rules in a pure C++ module with no LVGL, NVS, network, TF-card, or board
   dependencies. Keep persistence in a separate versioned NVS adapter and UI orchestration narrow.
 - For every mutation, compute a candidate state and commit it atomically before replacing the
-  in-memory state or updating the UI. A failed save must not grant a reward or consume a period.
-- The Stage 2 home actions are cultivate, journey, rest, and a read-only status entry. Require a
-  confirmation step before consuming a period. The fourth entry becomes the weapon shop in Stage 3.
+  in-memory state or updating the UI. A failed save must not deduct energy, start an activity, or
+  grant a reward.
 - AI, animations, and scenes may present a result but never calculate values, mutate authoritative
   state, or trigger an additional settlement.
-- Add host-side deterministic tests for period boundaries, missed rest, repeated rewards, one-shot
-  rest bonus, day rollover, duplicate input, save failure, restart recovery, and clock rollback.
-  Agents still must not run compilation commands in this workspace; report the required VS Code
-  firmware and physical-device checks to the project owner.
+- Add host-side deterministic tests for energy recovery, activity start/end boundaries, duplicate
+  settlement, save failure, restart recovery, and clock rollback. Agents still must not run
+  compilation commands in this workspace; report the required VS Code firmware and physical-device
+  checks to the project owner.
 
 ## Immortal Pet Layered Idle Animation
 

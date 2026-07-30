@@ -12,6 +12,7 @@ struct GameTime {
     bool is_night = false;
     int64_t unix_seconds = 0;
     int32_t local_day = 0;  // YYYYMMDD in China Standard Time.
+    uint8_t local_hour = 0;
     DailyPeriod period = DailyPeriod::kUnavailable;
 };
 

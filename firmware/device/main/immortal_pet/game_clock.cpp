@@ -32,6 +32,7 @@ GameTime GameClock::Now() {
     result.unix_seconds = static_cast<int64_t>(now);
     result.local_day = (local_time.tm_year + 1900) * 10000 +
         (local_time.tm_mon + 1) * 100 + local_time.tm_mday;
+    result.local_hour = static_cast<uint8_t>(local_time.tm_hour);
     result.is_night = local_time.tm_hour < 7 || local_time.tm_hour >= 18;
     if (local_time.tm_hour >= 5 && local_time.tm_hour < 11) {
         result.period = DailyPeriod::kMorning;
