@@ -20,8 +20,14 @@ enum class GameError : uint8_t {
     kNothingToClaim,
 };
 
+enum class CultivationEvent : uint8_t {
+    kNone = 0,
+    kEnlightenment,
+    kInnerDemon,
+};
+
 struct GameState {
-    static constexpr uint32_t kSchemaVersion = 1;
+    static constexpr uint32_t kSchemaVersion = 2;
 
     uint32_t schema_version = kSchemaVersion;
     uint32_t cultivation = 0;
@@ -33,6 +39,8 @@ struct GameState {
     int64_t activity_started_at = 0;
     int64_t activity_ends_at = 0;
     int64_t energy_anchor_at = 0;
+    CultivationEvent cultivation_event = CultivationEvent::kNone;
+    uint32_t cultivation_seed = 0;
 };
 
 struct ClaimResult {
@@ -40,13 +48,14 @@ struct ClaimResult {
     uint32_t cultivation_gained = 0;
     uint32_t spirit_stones_gained = 0;
     uint16_t materials_gained = 0;
+    CultivationEvent cultivation_event = CultivationEvent::kNone;
 };
 
 class GameEngine {
 public:
     static constexpr uint8_t kMaxEnergy = 100;
     static constexpr int64_t kEnergyRecoverySeconds = 300;
-    static constexpr int64_t kBreathingDurationSeconds = 30;
+    static constexpr int64_t kBreathingDurationSeconds = 5 * 60;
     static constexpr uint8_t kBreathingEnergyCost = 10;
     static constexpr uint8_t kJourneyEnergyCost = 15;
 
@@ -56,10 +65,12 @@ public:
     GameError Tick(int64_t now);
     GameError StartBreathing(int64_t now);
     GameError StartBackMountainJourney(int64_t now, int64_t duration_seconds);
+    void CancelActivity();
     ClaimResult ClaimActivity(int64_t now);
 
 private:
     static bool IsValidJourneyDuration(int64_t duration_seconds);
+    static CultivationEvent RollCultivationEvent(uint32_t cultivation, uint32_t seed);
     void ClearActivity();
     void RaiseMood(uint8_t amount);
 

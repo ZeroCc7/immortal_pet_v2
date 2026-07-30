@@ -28,7 +28,11 @@
 
 #if CONFIG_IMMORTAL_PET_V2
 #include "immortal_pet/game_clock.h"
+#include "immortal_pet/cultivation_scene.h"
+#include "immortal_pet/home_assets.h"
 #include "immortal_pet/game_engine.h"
+#include "immortal_pet/game_state_store.h"
+#include "immortal_pet/pcf85063_rtc.h"
 #include "immortal_pet/player_profile.h"
 #include "display/lvgl_display/lvgl_theme.h"
 #include "display/lvgl_display/lvgl_image.h"
@@ -36,6 +40,7 @@
 #include "material_symbols.h"
 #include <array>
 #include <cstdlib>
+#include <ctime>
 #include <esp_heap_caps.h>
 #include <esp_random.h>
 #include <esp_timer.h>
@@ -175,16 +180,16 @@ private:
     std::unique_ptr<LvglRawImage> home_background_;
     std::unique_ptr<LvglAllocatedImage> scene_day_background_;
     std::unique_ptr<LvglAllocatedImage> scene_night_background_;
+    immortal_pet_board::CultivationScene cultivation_scene_;
     bool scene_night_active_ = false;
     bool scene_background_initialized_ = false;
     immortal_pet::GameClock* game_clock_ = nullptr;
-    std::unique_ptr<LvglAllocatedImage> home_action_backgrounds_[4];
-    std::unique_ptr<LvglAllocatedImage> home_hud_badge_;
-    std::unique_ptr<LvglAllocatedImage> home_dialog_background_;
-    std::unique_ptr<LvglAllocatedImage> home_realm_title_;
-    std::unique_ptr<LvglAllocatedImage> home_realm_layer_;
-    std::unique_ptr<LvglAllocatedImage> home_realm_tag_;
+    lv_timer_t* home_clock_timer_ = nullptr;
+    bool home_clock_shows_date_ = true;
+    immortal_pet_board::HomeAssets home_assets_;
     uint8_t displayed_realm_layer_ = 0;
+    uint32_t displayed_cultivation_ = 0;
+    uint8_t displayed_energy_ = immortal_pet::GameEngine::kMaxEnergy;
     std::array<std::unique_ptr<LvglRawImage>, kIdleFrameCount> idle_frames_;
     FemaleInitialFrames female_initial_idle_05_frames_;
     FemaleInitialFrames female_initial_idle_06_frames_;
@@ -308,6 +313,9 @@ private:
         lv_image_set_inner_align(image, LV_IMAGE_ALIGN_TOP_LEFT);
         lv_image_set_pivot(image, 0, 0);
         lv_image_set_scale(image, kCharacterScale);
+        // Cultivation centers this object. Home sprites use absolute world
+        // coordinates, so clear that alignment before restoring the idle frame.
+        lv_obj_set_align(image, LV_ALIGN_DEFAULT);
         lv_obj_set_pos(image,
             layered_actor_x_ + ScaleSpriteCoordinate(frame.x - min_x),
             kCharacterGroundY +
@@ -316,7 +324,7 @@ private:
     }
 
     void ShowLayeredActorFrame(bool walking, size_t index) {
-        if (!layered_actor_loaded_ || layered_body_ == nullptr) {
+        if (cultivation_scene_.active() || !layered_actor_loaded_ || layered_body_ == nullptr) {
             return;
         }
         const auto& body_action = walking ? layered_body_->walk : layered_body_->stand;
@@ -565,33 +573,6 @@ private:
         return strcmp(body, expected_body) == 0;
     }
 
-    static bool LoadHomepageImageFromSd(
-        const char* path, std::unique_ptr<LvglAllocatedImage>& target) {
-        std::vector<uint8_t> file_data;
-        if (!ReadSdFile(path, file_data)) {
-            ESP_LOGW(TAG, "Homepage decoration missing: %s", path);
-            return false;
-        }
-        auto* data = static_cast<uint8_t*>(
-            heap_caps_malloc(file_data.size(), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-        if (data == nullptr) {
-            data = static_cast<uint8_t*>(heap_caps_malloc(file_data.size(), MALLOC_CAP_8BIT));
-        }
-        if (data == nullptr) {
-            ESP_LOGW(TAG, "Failed to allocate homepage decoration: %s", path);
-            return false;
-        }
-        memcpy(data, file_data.data(), file_data.size());
-        try {
-            target = std::make_unique<LvglAllocatedImage>(data, file_data.size());
-            return true;
-        } catch (...) {
-            heap_caps_free(data);
-            ESP_LOGW(TAG, "Failed to decode homepage decoration: %s", path);
-            return false;
-        }
-    }
-
     static uint8_t CultivationRealmLayer(uint32_t cultivation) {
         constexpr uint32_t kCultivationPerLayer = 100;
         constexpr uint8_t kRealmCount = 8;
@@ -602,24 +583,6 @@ private:
         }
         return static_cast<uint8_t>(std::min<uint32_t>(
             (cultivation - 1) / kCultivationPerLayer + 1, kMaxRealmLayer));
-    }
-
-    static const char* RealmAssetForLayer(uint8_t realm_layer) {
-        static constexpr const char* kRealmAssets[] = {
-            "home_realm_qi_refining_v2.png",
-            "home_realm_foundation_v2.png",
-            "home_realm_golden_core_v2.png",
-            "home_realm_nascent_soul_v2.png",
-            "home_realm_spirit_transformation_v2.png",
-            "home_realm_body_integration_v2.png",
-            "home_realm_great_vehicle_v2.png",
-            "home_realm_tribulation_v2.png",
-        };
-        if (realm_layer == 0) {
-            return nullptr;
-        }
-        return kRealmAssets[std::min<size_t>((realm_layer - 1) / 15,
-                                              sizeof(kRealmAssets) / sizeof(kRealmAssets[0]) - 1)];
     }
 
     void RefreshRealmImages() {
@@ -635,44 +598,28 @@ private:
             lv_obj_delete(pet_realm_layer_);
             pet_realm_layer_ = nullptr;
         }
-        if (home_realm_title_ != nullptr) {
+        if (const auto* realm_title = home_assets_.realm_title(); realm_title != nullptr) {
             auto* title = lv_image_create(pet_hud_panel_);
-            lv_image_set_src(title, home_realm_title_->image_dsc());
+            lv_image_set_src(title, realm_title);
             lv_obj_align(title, LV_ALIGN_TOP_LEFT, 72, 4);
             lv_obj_add_flag(title, LV_OBJ_FLAG_HIDDEN);
             pet_realm_title_ = title;
         }
-        if (home_realm_layer_ != nullptr) {
+        if (const auto* realm_layer = home_assets_.realm_layer(); realm_layer != nullptr) {
             auto* layer = lv_image_create(pet_hud_panel_);
-            lv_image_set_src(layer, home_realm_layer_->image_dsc());
-            lv_obj_align(layer, LV_ALIGN_TOP_LEFT, 168, 15);
+            lv_image_set_src(layer, realm_layer);
+            lv_obj_align(layer, LV_ALIGN_TOP_LEFT, 173, 15);
             lv_obj_add_flag(layer, LV_OBJ_FLAG_HIDDEN);
             pet_realm_layer_ = layer;
         }
     }
 
     bool LoadRealmArtworkForLayer(uint8_t realm_layer) {
-        const char* realm_asset = RealmAssetForLayer(realm_layer);
-        if (realm_asset == nullptr) {
-            return false;
-        }
-        char realm_path[128];
-        char layer_path[128];
-        snprintf(realm_path, sizeof(realm_path), "/sdcard/immortal_pet/home/%s", realm_asset);
-        snprintf(layer_path, sizeof(layer_path),
-                 "/sdcard/immortal_pet/home/home_realm_layer_%02u_v1.png",
-                 static_cast<unsigned>((realm_layer - 1) % 15 + 1));
-
-        std::unique_ptr<LvglAllocatedImage> realm_image;
-        std::unique_ptr<LvglAllocatedImage> layer_image;
-        if (!LoadHomepageImageFromSd(realm_path, realm_image) ||
-            !LoadHomepageImageFromSd(layer_path, layer_image)) {
+        if (!home_assets_.LoadRealmArtwork(realm_layer)) {
             ESP_LOGW(TAG, "Realm artwork unavailable for layer %u",
                      static_cast<unsigned>(realm_layer));
             return false;
         }
-        home_realm_title_ = std::move(realm_image);
-        home_realm_layer_ = std::move(layer_image);
         RefreshRealmImages();
         displayed_realm_layer_ = realm_layer;
         return true;
@@ -760,7 +707,7 @@ private:
     }
 
     void ShowIdleFrame() {
-        if (pet_character_image_ == nullptr) {
+        if (cultivation_scene_.active() || pet_character_image_ == nullptr) {
             return;
         }
         if (layered_actor_loaded_) {
@@ -781,6 +728,9 @@ private:
     }
 
     void StartIdleAnimation() {
+        if (cultivation_scene_.active()) {
+            return;
+        }
         if ((!layered_actor_loaded_ && !female_initial_loaded_ && idle_frames_[0] == nullptr) ||
             pet_character_image_ == nullptr) {
             return;
@@ -824,6 +774,9 @@ private:
     }
 
     void StartWalkAnimation(int target_x) {
+        if (cultivation_scene_.active()) {
+            return;
+        }
         const bool legacy_ready = female_initial_loaded_ &&
             female_initial_walk_frames_ != nullptr && (*female_initial_walk_frames_)[0] != nullptr;
         const bool layered_ready = layered_actor_loaded_ && layered_body_ != nullptr &&
@@ -1002,6 +955,51 @@ private:
         lv_obj_set_style_bg_image_opa(scene_, LV_OPA_COVER, 0);
         lv_obj_invalidate(scene_);
         ESP_LOGI(TAG, "Dongfu scene switched to %s background", use_night ? "night" : "day");
+    }
+
+    static void AnimateHomeClock(void* object, int32_t translate_y) {
+        lv_obj_set_style_translate_y(static_cast<lv_obj_t*>(object), translate_y, 0);
+    }
+
+    void RefreshHomeClock(bool animate) {
+        if (status_label_ == nullptr || game_clock_ == nullptr) {
+            return;
+        }
+        const auto game_time = game_clock_->Now();
+        if (!game_time.synchronized || game_time.clock_rolled_back) {
+            lv_label_set_text(status_label_, "--:--");
+            return;
+        }
+
+        const time_t now = static_cast<time_t>(game_time.unix_seconds);
+        tm local_time = {};
+        if (localtime_r(&now, &local_time) == nullptr) {
+            return;
+        }
+        char text[32] = {};
+        if (home_clock_shows_date_) {
+            std::snprintf(text, sizeof(text), "%d/%02d", local_time.tm_mon + 1,
+                          local_time.tm_mday);
+        } else {
+            std::strftime(text, sizeof(text), "%H:%M", &local_time);
+        }
+        lv_label_set_text(status_label_, text);
+        lv_obj_remove_flag(status_label_, LV_OBJ_FLAG_HIDDEN);
+        if (animate) {
+            lv_anim_t animation;
+            lv_anim_init(&animation);
+            lv_anim_set_var(&animation, status_label_);
+            lv_anim_set_values(&animation, 8, 0);
+            lv_anim_set_duration(&animation, 220);
+            lv_anim_set_exec_cb(&animation, AnimateHomeClock);
+            lv_anim_start(&animation);
+        }
+    }
+
+    static void HomeClockTimerCallback(lv_timer_t* timer) {
+        auto* display = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
+        display->home_clock_shows_date_ = !display->home_clock_shows_date_;
+        display->RefreshHomeClock(true);
     }
 
     void StartAutonomousBehavior() {
@@ -1214,11 +1212,12 @@ private:
 
     static void OnActionClicked(lv_event_t* event) {
         auto* binding = static_cast<ActionBinding*>(lv_event_get_user_data(event));
-        if (binding == nullptr || binding->display == nullptr) {
+        if (binding == nullptr || binding->display == nullptr ||
+            !binding->display->action_handler_) {
             return;
         }
         ESP_LOGI(TAG, "Homepage action selected: %d", static_cast<int>(binding->action));
-        binding->display->SetPetDialog("该功能暂未开发");
+        binding->display->action_handler_(binding->action);
     }
 
     static void OnGenderSelected(lv_event_t* event) {
@@ -1308,8 +1307,9 @@ private:
                             const lv_font_t* icon_font) {
         auto* button = lv_obj_create(parent);
         lv_obj_set_size(button, 108, kActionButtonHeight);
-        const bool has_action_art = index >= 0 && index < 4 &&
-            home_action_backgrounds_[index] != nullptr;
+        const auto* action_art = index >= 0 && index < 4 ?
+            home_assets_.action_background(static_cast<size_t>(index)) : nullptr;
+        const bool has_action_art = action_art != nullptr;
         if (has_action_art) {
             lv_obj_set_style_border_width(button, 0, 0);
             lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
@@ -1322,7 +1322,7 @@ private:
         }
         if (has_action_art) {
             auto* icon = lv_image_create(button);
-            lv_image_set_src(icon, home_action_backgrounds_[index]->image_dsc());
+            lv_image_set_src(icon, action_art);
             // Generated assets are normalized to a 160px square canvas.
             lv_image_set_scale(icon, 166);
             lv_obj_center(icon);
@@ -1347,6 +1347,7 @@ private:
         action_bindings_[index] = {this, action};
         lv_obj_add_event_cb(button, OnActionClicked, LV_EVENT_CLICKED, &action_bindings_[index]);
     }
+
 #endif
 
 public:
@@ -1453,7 +1454,7 @@ public:
         lv_obj_remove_flag(container_, LV_OBJ_FLAG_CLICKABLE);
 
         top_bar_ = lv_obj_create(screen);
-        lv_obj_set_size(top_bar_, 480, 28);
+        lv_obj_set_size(top_bar_, 480, 34);
         lv_obj_set_style_radius(top_bar_, 0, 0);
         lv_obj_set_style_border_width(top_bar_, 0, 0);
         lv_obj_set_style_pad_left(top_bar_, 18, 0);
@@ -1463,7 +1464,7 @@ public:
         lv_obj_set_style_bg_opa(top_bar_, LV_OPA_TRANSP, 0);
         lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(top_bar_, LV_ALIGN_TOP_MID, 0, 14);
+        lv_obj_align(top_bar_, LV_ALIGN_TOP_MID, 0, 11);
 
         auto* scene = lv_obj_create(screen);
         scene_ = scene;
@@ -1504,12 +1505,14 @@ public:
         }
 
         status_label_ = lv_label_create(top_bar_);
-        lv_obj_set_width(status_label_, 80);
+        // Keep date/time beside the Wi-Fi indicator so it does not overlap realm art.
+        lv_obj_set_width(status_label_, 72);
         lv_label_set_long_mode(status_label_, LV_LABEL_LONG_CLIP);
         lv_obj_set_style_text_align(status_label_, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_font(status_label_, text_font, 0);
         lv_label_set_text(status_label_, "--:--");
-        lv_obj_align(status_label_, LV_ALIGN_CENTER, 0, 0);
+        // Keep a visible gap before the Wi-Fi icon at the right side of the top bar.
+        lv_obj_align(status_label_, LV_ALIGN_RIGHT_MID, -107, 0);
 
         notification_label_ = lv_label_create(top_bar_);
         lv_obj_set_width(notification_label_, 0);
@@ -1529,9 +1532,9 @@ public:
         lv_obj_remove_flag(pet_hud_panel_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_remove_flag(pet_hud_panel_, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_align(pet_hud_panel_, LV_ALIGN_TOP_LEFT, 12, 12);
-        if (home_hud_badge_ != nullptr) {
+        if (const auto* hud_badge = home_assets_.hud_badge(); hud_badge != nullptr) {
             auto* badge = lv_image_create(pet_hud_panel_);
-            lv_image_set_src(badge, home_hud_badge_->image_dsc());
+            lv_image_set_src(badge, hud_badge);
             lv_obj_align(badge, LV_ALIGN_LEFT_MID, 8, 0);
             pet_realm_badge_ = badge;
         } else {
@@ -1554,9 +1557,9 @@ public:
             lv_obj_center(badge_icon);
         }
 
-        if (home_realm_tag_ != nullptr) {
+        if (const auto* realm_tag_asset = home_assets_.realm_tag(); realm_tag_asset != nullptr) {
             auto* realm_tag = lv_image_create(pet_hud_panel_);
-            lv_image_set_src(realm_tag, home_realm_tag_->image_dsc());
+            lv_image_set_src(realm_tag, realm_tag_asset);
             lv_obj_align(realm_tag, LV_ALIGN_BOTTOM_LEFT, 14, -1);
             pet_realm_tag_ = realm_tag;
         } else {
@@ -1567,15 +1570,15 @@ public:
             pet_realm_tag_ = realm_tag;
         }
 
-        if (home_realm_title_ != nullptr) {
+        if (const auto* realm_title_asset = home_assets_.realm_title(); realm_title_asset != nullptr) {
             auto* realm_title = lv_image_create(pet_hud_panel_);
-            lv_image_set_src(realm_title, home_realm_title_->image_dsc());
+            lv_image_set_src(realm_title, realm_title_asset);
             lv_obj_align(realm_title, LV_ALIGN_TOP_LEFT, 72, 4);
             pet_realm_title_ = realm_title;
-            if (home_realm_layer_ != nullptr) {
+            if (const auto* realm_layer_asset = home_assets_.realm_layer(); realm_layer_asset != nullptr) {
                 auto* realm_layer = lv_image_create(pet_hud_panel_);
-                lv_image_set_src(realm_layer, home_realm_layer_->image_dsc());
-                lv_obj_align(realm_layer, LV_ALIGN_TOP_LEFT, 168, 15);
+                lv_image_set_src(realm_layer, realm_layer_asset);
+                lv_obj_align(realm_layer, LV_ALIGN_TOP_LEFT, 173, 15);
                 pet_realm_layer_ = realm_layer;
             }
         } else {
@@ -1599,17 +1602,14 @@ public:
         lv_obj_add_flag(pet_state_label_, LV_OBJ_FLAG_HIDDEN);
 
         pet_stats_label_ = lv_label_create(pet_hud_panel_);
-        lv_obj_set_width(pet_stats_label_, 390);
-        lv_label_set_text(pet_stats_label_, "修为 0    精力 100\n心境 50    灵石 0");
-        lv_obj_set_style_text_align(pet_stats_label_, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_text_color(pet_stats_label_, lv_color_hex(0xD7C8A6), 0);
-        lv_obj_set_width(pet_stats_label_, 74);
-        lv_label_set_text(pet_stats_label_, "0 / 100");
-        lv_obj_set_style_text_align(pet_stats_label_, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_set_width(pet_stats_label_, 172);
+        const std::string energy_text = "精力 " + std::to_string(displayed_energy_) + " / " +
+            std::to_string(immortal_pet::GameEngine::kMaxEnergy);
+        lv_label_set_text(pet_stats_label_, energy_text.c_str());
+        lv_obj_set_style_text_align(pet_stats_label_, LV_TEXT_ALIGN_LEFT, 0);
         lv_obj_set_style_text_color(pet_stats_label_, lv_color_hex(0xFFF0C9), 0);
-        lv_obj_set_style_transform_scale(pet_stats_label_, 150, 0);
-        lv_obj_align(pet_stats_label_, LV_ALIGN_TOP_LEFT, 164, 44);
-        lv_obj_add_flag(pet_stats_label_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_transform_scale(pet_stats_label_, 160, 0);
+        lv_obj_align(pet_stats_label_, LV_ALIGN_TOP_LEFT, 72, 58);
 
         auto* cultivation_track = lv_obj_create(screen);
         lv_obj_set_size(cultivation_track, 212, 8);
@@ -1645,6 +1645,18 @@ public:
             lv_obj_add_flag(pet_realm_layer_, LV_OBJ_FLAG_HIDDEN);
         }
         lv_obj_add_flag(cultivation_track_, LV_OBJ_FLAG_HIDDEN);
+        if (displayed_realm_layer_ != 0) {
+            lv_obj_remove_flag(pet_realm_badge_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(pet_realm_tag_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(pet_realm_title_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(pet_realm_layer_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(cultivation_track_, LV_OBJ_FLAG_HIDDEN);
+            constexpr uint32_t kCultivationCap = 100;
+            constexpr int32_t kTrackInnerWidth = 168;
+            const uint32_t cultivation = std::min(displayed_cultivation_, kCultivationCap);
+            lv_obj_set_width(cultivation_fill_, std::max<int32_t>(1, static_cast<int32_t>(
+                (cultivation * kTrackInnerWidth) / kCultivationCap)));
+        }
 
         pet_avatar_ = lv_obj_create(screen);
         lv_obj_set_size(pet_avatar_, 138, 138);
@@ -1696,8 +1708,8 @@ public:
         lv_obj_set_style_radius(pet_dialog_panel_, 0, 0);
         lv_obj_set_style_border_width(pet_dialog_panel_, 0, 0);
         lv_obj_set_style_bg_opa(pet_dialog_panel_, LV_OPA_TRANSP, 0);
-        if (home_dialog_background_ != nullptr) {
-            lv_obj_set_style_bg_image_src(pet_dialog_panel_, home_dialog_background_->image_dsc(), 0);
+        if (const auto* dialog_background = home_assets_.dialog_background(); dialog_background != nullptr) {
+            lv_obj_set_style_bg_image_src(pet_dialog_panel_, dialog_background, 0);
             lv_obj_set_style_bg_image_opa(pet_dialog_panel_, LV_OPA_COVER, 0);
         }
         lv_obj_remove_flag(pet_dialog_panel_, LV_OBJ_FLAG_SCROLLABLE);
@@ -1829,6 +1841,7 @@ public:
         if (status_label_ != nullptr) {
             lv_obj_set_style_text_font(status_label_, text_font, 0);
         }
+        cultivation_scene_.ApplyTextFont(text_font);
         if (pet_face_label_ != nullptr) {
             lv_obj_set_style_text_font(pet_face_label_, text_font, 0);
         }
@@ -1857,6 +1870,10 @@ public:
 #if CONFIG_IMMORTAL_PET_V2
     void SetGameClock(immortal_pet::GameClock* game_clock) {
         game_clock_ = game_clock;
+        RefreshHomeClock(false);
+        if (home_clock_timer_ == nullptr) {
+            home_clock_timer_ = lv_timer_create(HomeClockTimerCallback, 10000, this);
+        }
     }
 
     void SetActionHandler(std::function<void(PetAction)> handler) {
@@ -1962,26 +1979,99 @@ public:
         return true;
     }
 
-    void LoadHomepageDecorationsFromSd() {
-        constexpr const char* kRoot = "/sdcard/immortal_pet/home";
-        static constexpr const char* kActionFiles[] = {
-            "home_menu_journey_v3.png",
-            "home_menu_cultivate_v3.png",
-            "home_menu_journal_v3.png",
-            "home_menu_shop_v3.png",
-        };
-
-        char path[128];
-        for (size_t i = 0; i < 4; ++i) {
-            snprintf(path, sizeof(path), "%s/%s", kRoot, kActionFiles[i]);
-            LoadHomepageImageFromSd(path, home_action_backgrounds_[i]);
+    bool EnterCultivationScene(immortal_pet::CharacterGender gender,
+                               bool show_enlightenment) {
+        DisplayLockGuard lock(this);
+        if (scene_ == nullptr || pet_character_image_ == nullptr || cultivation_scene_.active()) {
+            return false;
         }
-        snprintf(path, sizeof(path), "%s/home_hud_badge_v3.png", kRoot);
-        LoadHomepageImageFromSd(path, home_hud_badge_);
-        snprintf(path, sizeof(path), "%s/home_dialog_bubble_v2.png", kRoot);
-        LoadHomepageImageFromSd(path, home_dialog_background_);
-        snprintf(path, sizeof(path), "%s/home_realm_tag_v2.png", kRoot);
-        LoadHomepageImageFromSd(path, home_realm_tag_);
+        if (idle_animation_timer_ != nullptr) {
+            lv_timer_pause(idle_animation_timer_);
+        }
+        if (walk_animation_timer_ != nullptr) {
+            lv_timer_pause(walk_animation_timer_);
+        }
+        if (autonomous_behavior_timer_ != nullptr) {
+            lv_timer_pause(autonomous_behavior_timer_);
+        }
+        if (layered_actor_change_timer_ != nullptr) {
+            lv_timer_pause(layered_actor_change_timer_);
+        }
+        if (idle_resume_timer_ != nullptr) {
+            lv_timer_delete(idle_resume_timer_);
+            idle_resume_timer_ = nullptr;
+        }
+        if (pet_weapon_image_ != nullptr) {
+            lv_image_set_src(pet_weapon_image_, nullptr);
+            lv_obj_add_flag(pet_weapon_image_, LV_OBJ_FLAG_HIDDEN);
+        }
+        lv_obj_add_flag(pet_character_image_, LV_OBJ_FLAG_HIDDEN);
+        const auto time = game_clock_ == nullptr ? immortal_pet::GameTime{} : game_clock_->Now();
+        if (!cultivation_scene_.Enter(lv_obj_get_parent(scene_), gender, time.is_night,
+                                      show_enlightenment)) {
+            return false;
+        }
+        if (pet_actions_ != nullptr) {
+            lv_obj_add_flag(pet_actions_, LV_OBJ_FLAG_HIDDEN);
+        }
+        ESP_LOGI(TAG, "Cultivation scene entered; free PSRAM: %u",
+                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+        return true;
+    }
+
+    void ExitCultivationScene(immortal_pet::CharacterGender gender) {
+        DisplayLockGuard lock(this);
+        cultivation_scene_.Exit();
+        if (pet_actions_ != nullptr) {
+            lv_obj_remove_flag(pet_actions_, LV_OBJ_FLAG_HIDDEN);
+        }
+        (void)gender;
+        autonomous_walking_ = false;
+        if (autonomous_behavior_timer_ != nullptr) {
+            lv_timer_resume(autonomous_behavior_timer_);
+            lv_timer_reset(autonomous_behavior_timer_);
+        }
+        if (layered_actor_change_timer_ != nullptr) {
+            lv_timer_resume(layered_actor_change_timer_);
+            lv_timer_reset(layered_actor_change_timer_);
+        }
+        if (pet_character_image_ != nullptr) {
+            lv_obj_remove_flag(pet_character_image_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(pet_character_image_);
+            lv_obj_invalidate(pet_character_image_);
+        }
+        StartIdleAnimation();
+        StartAutonomousBehavior();
+        ESP_LOGI(TAG, "Cultivation scene released; free PSRAM: %u",
+                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+    }
+
+    void ShowCultivationEnlightenment() {
+        DisplayLockGuard lock(this);
+        cultivation_scene_.ShowEnlightenment();
+    }
+
+    void SetCultivationCountdown(int64_t seconds_remaining) {
+        DisplayLockGuard lock(this);
+        cultivation_scene_.SetCountdown(seconds_remaining);
+    }
+
+    bool IsCultivationSceneActive() const {
+        return cultivation_scene_.active();
+    }
+
+    void LoadHomepageDecorationsFromSd() {
+        home_assets_.Load();
+        displayed_realm_layer_ = 0;
+    }
+
+    void RefreshRealmArtwork(const immortal_pet::GameState& state) {
+        displayed_realm_layer_ = 0;
+        const uint8_t realm_layer = CultivationRealmLayer(state.cultivation);
+        if (realm_layer != 0 && home_assets_.LoadRealmArtwork(realm_layer)) {
+            displayed_realm_layer_ = realm_layer;
+        }
+        UpdatePetStats(state);
     }
 
     void SetTfCardMounted(bool mounted) {
@@ -2006,16 +2096,14 @@ public:
 
     void UpdatePetStats(const immortal_pet::GameState& state) {
         DisplayLockGuard lock(this);
+        displayed_cultivation_ = state.cultivation;
+        displayed_energy_ = state.energy;
         if (pet_stats_label_ == nullptr) {
             return;
         }
-        const std::string text = "修为 " + std::to_string(state.cultivation) +
-            "    精力 " + std::to_string(state.energy) +
-            "\n心境 " + std::to_string(state.mood) +
-            "    灵石 " + std::to_string(state.spirit_stones);
-        lv_label_set_text(pet_stats_label_, text.c_str());
-        const std::string home_text = std::to_string(state.cultivation) + " / 100";
-        lv_label_set_text(pet_stats_label_, home_text.c_str());
+        const std::string energy_text = "精力 " + std::to_string(state.energy) + " / " +
+            std::to_string(immortal_pet::GameEngine::kMaxEnergy);
+        lv_label_set_text(pet_stats_label_, energy_text.c_str());
         const uint8_t realm_layer = CultivationRealmLayer(state.cultivation);
         if (realm_layer != 0 && realm_layer != displayed_realm_layer_) {
             LoadRealmArtworkForLayer(realm_layer);
@@ -2101,6 +2189,9 @@ public:
             return;
         }
         if (IsClockStatus(status)) {
+            if (home_clock_timer_ != nullptr) {
+                return;
+            }
             if (status_label_ != nullptr) {
                 lv_label_set_text(status_label_, status);
                 lv_obj_remove_flag(status_label_, LV_OBJ_FLAG_HIDDEN);
@@ -2209,8 +2300,16 @@ private:
 #if CONFIG_IMMORTAL_PET_V2
     immortal_pet::GameEngine game_engine_;
     immortal_pet::GameClock game_clock_;
+    immortal_pet::GameStateStore game_state_store_;
+    immortal_pet::Pcf85063Rtc rtc_;
     immortal_pet::PlayerProfile player_profile_;
     std::mutex game_mutex_;
+    esp_timer_handle_t rtc_sync_timer_ = nullptr;
+    esp_timer_handle_t game_activity_timer_ = nullptr;
+    immortal_pet::CharacterGender active_character_gender_ =
+        immortal_pet::CharacterGender::kUnset;
+    int64_t last_observed_system_time_ = 0;
+    int64_t last_rtc_write_time_ = 0;
     sdmmc_card_t* tf_card_ = nullptr;
     bool tf_card_mounted_ = false;
 
@@ -2259,8 +2358,75 @@ private:
         ESP_LOGI(TAG, "TF card mounted at /sdcard");
     }
 
-    int64_t GameNowSeconds() const {
-        return esp_timer_get_time() / 1000000;
+    int64_t GameNowSeconds() {
+        const auto game_time = game_clock_.Now();
+        if (!game_time.synchronized || game_time.clock_rolled_back) {
+            return -1;
+        }
+        return game_time.unix_seconds;
+    }
+
+    void SaveGameState() {
+        if (!game_state_store_.Save(game_engine_.state())) {
+            ESP_LOGW(TAG, "Failed to save immortal-pet game state");
+        }
+    }
+
+    void InitializeRtc() {
+        if (!rtc_.Initialize(i2c_bus_)) {
+            ESP_LOGW(TAG, "RTC unavailable; waiting for network time");
+            return;
+        }
+        if (rtc_.RestoreSystemTime()) {
+            const int64_t now = time(nullptr);
+            last_observed_system_time_ = now;
+            last_rtc_write_time_ = now;
+            ESP_LOGI(TAG, "Game clock source: RTC");
+        } else {
+            ESP_LOGW(TAG, "RTC has no valid time; waiting for network time");
+        }
+    }
+
+    void SyncRtcFromSystemTime() {
+        constexpr int64_t kFirstTrustedUnixTime = 1735689600;  // 2025-01-01 UTC.
+        constexpr int64_t kPeriodicWriteSeconds = 6 * 60 * 60;
+        constexpr int64_t kSyncPollSeconds = 5;
+        constexpr int64_t kTimeStepToleranceSeconds = 3;
+
+        const int64_t now = time(nullptr);
+        if (now < kFirstTrustedUnixTime) {
+            return;
+        }
+
+        const bool system_time_changed = last_observed_system_time_ != 0 &&
+            std::llabs(now - last_observed_system_time_ - kSyncPollSeconds) >
+                kTimeStepToleranceSeconds;
+        const bool periodic_write = last_rtc_write_time_ == 0 ||
+            now - last_rtc_write_time_ >= kPeriodicWriteSeconds;
+        if ((system_time_changed || periodic_write) && rtc_.WriteSystemTime()) {
+            last_rtc_write_time_ = now;
+            ESP_LOGI(TAG, "RTC synchronized from %s time", system_time_changed ? "network" : "system");
+        }
+        last_observed_system_time_ = now;
+    }
+
+    static void SyncRtcTimerCallback(void* context) {
+        auto* board = static_cast<WaveshareEsp32s3TouchAMOLED2inch16*>(context);
+        Application::GetInstance().Schedule([board]() { board->SyncRtcFromSystemTime(); });
+    }
+
+    void StartRtcSyncTimer() {
+        esp_timer_create_args_t args = {};
+        args.callback = &SyncRtcTimerCallback;
+        args.arg = this;
+        args.name = "rtc_sync";
+        if (esp_timer_create(&args, &rtc_sync_timer_) != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to create RTC sync timer");
+            return;
+        }
+        if (esp_timer_start_periodic(rtc_sync_timer_, 5 * 1000 * 1000) != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to start RTC sync timer");
+        }
     }
 
     std::string FormatGameStatus() {
@@ -2284,6 +2450,56 @@ private:
         display_->SetPetDialog(message);
     }
 
+    static void GameActivityTimerCallback(void* context) {
+        auto* board = static_cast<WaveshareEsp32s3TouchAMOLED2inch16*>(context);
+        Application::GetInstance().Schedule([board]() { board->CompleteActivityIfReady(); });
+    }
+
+    void CompleteActivityIfReady() {
+        std::lock_guard<std::mutex> lock(game_mutex_);
+        if (game_engine_.state().activity != immortal_pet::Activity::kBreathing) {
+            return;
+        }
+        const int64_t now = GameNowSeconds();
+        const auto& state = game_engine_.state();
+        if (now < 0) {
+            return;
+        }
+        display_->SetCultivationCountdown(state.activity_ends_at - now);
+        if (state.cultivation_event == immortal_pet::CultivationEvent::kEnlightenment &&
+            now >= state.activity_started_at + immortal_pet::GameEngine::kBreathingDurationSeconds / 2) {
+            display_->ShowCultivationEnlightenment();
+        }
+        const auto result = game_engine_.ClaimActivity(now);
+        if (result.error == immortal_pet::GameError::kNotReady) {
+            return;
+        }
+        if (result.error != immortal_pet::GameError::kOk) {
+            ESP_LOGW(TAG, "Automatic cultivation settlement failed: %d", static_cast<int>(result.error));
+            return;
+        }
+        SaveGameState();
+        display_->ExitCultivationScene(active_character_gender_);
+        std::string message = "修炼结束：修为 +" + std::to_string(result.cultivation_gained) + "。";
+        if (result.cultivation_event == immortal_pet::CultivationEvent::kEnlightenment) {
+            message = "顿悟圆满：修为 +" + std::to_string(result.cultivation_gained) + "。";
+        } else if (result.cultivation_event == immortal_pet::CultivationEvent::kInnerDemon) {
+            message = "心魔稍阻道途，仍获修为 +" + std::to_string(result.cultivation_gained) + "。";
+        }
+        UpdatePetDisplay(message);
+    }
+
+    void StartGameActivityTimer() {
+        esp_timer_create_args_t args = {};
+        args.callback = &GameActivityTimerCallback;
+        args.arg = this;
+        args.name = "game_activity";
+        if (esp_timer_create(&args, &game_activity_timer_) != ESP_OK ||
+            esp_timer_start_periodic(game_activity_timer_, 1000 * 1000) != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to start game activity timer");
+        }
+    }
+
     void HandlePetAction(CustomLcdDisplay::PetAction action) {
         Application::GetInstance().Schedule([this, action]() {
             if (action == CustomLcdDisplay::PetAction::kTalk) {
@@ -2296,13 +2512,46 @@ private:
             std::string message;
 
             if (action == CustomLcdDisplay::PetAction::kBreathing) {
+                bool settled_expired_cultivation = false;
+                const auto activity = game_engine_.state().activity;
+                if (activity != immortal_pet::Activity::kIdle &&
+                    now >= game_engine_.state().activity_ends_at) {
+                    const auto result = game_engine_.ClaimActivity(now);
+                    if (result.error == immortal_pet::GameError::kOk &&
+                        activity == immortal_pet::Activity::kBreathing) {
+                        settled_expired_cultivation = true;
+                        display_->ExitCultivationScene(active_character_gender_);
+                    }
+                }
+
                 const auto error = game_engine_.StartBreathing(now);
                 if (error == immortal_pet::GameError::kOk) {
-                    message = "灵宠盘膝坐下，开始吐纳。30秒后可领取成果。";
+                    if (display_->EnterCultivationScene(active_character_gender_, false)) {
+                        message = settled_expired_cultivation ?
+                            "上次修炼已结算，开始新的修炼。" : "你盘膝入定，开始修炼。";
+                    } else {
+                        game_engine_.CancelActivity();
+                        display_->ExitCultivationScene(active_character_gender_);
+                        message = "修炼场素材加载失败，未开始本次修炼。";
+                    }
                 } else if (error == immortal_pet::GameError::kBusy) {
-                    message = "灵宠正在进行其他活动。";
+                    if (game_engine_.state().activity == immortal_pet::Activity::kBreathing) {
+                        if (!display_->IsCultivationSceneActive()) {
+                            if (!display_->EnterCultivationScene(active_character_gender_, false)) {
+                                game_engine_.CancelActivity();
+                                display_->ExitCultivationScene(active_character_gender_);
+                                message = "修炼场恢复失败，本次修炼已取消，请重试。";
+                            }
+                        }
+                        if (message.empty()) {
+                            display_->SetCultivationCountdown(game_engine_.state().activity_ends_at - now);
+                            message = "当前修炼仍在进行中。";
+                        }
+                    } else {
+                        message = "当前正在进行其他活动。";
+                    }
                 } else {
-                    message = "精力不足，先让灵宠休息一会儿吧。";
+                    message = "精力不足，先待机恢复一会儿吧。";
                 }
             } else if (action == CustomLcdDisplay::PetAction::kJourney) {
                 const auto error = game_engine_.StartBackMountainJourney(now, 10 * 60);
@@ -2316,15 +2565,23 @@ private:
             } else if (action == CustomLcdDisplay::PetAction::kClaim) {
                 const auto result = game_engine_.ClaimActivity(now);
                 if (result.error == immortal_pet::GameError::kOk) {
-                    message = "灵宠回到你身边：修为 +" +
-                        std::to_string(result.cultivation_gained) + "，灵石 +" +
-                        std::to_string(result.spirit_stones_gained) + "。";
+                    if (result.cultivation_event == immortal_pet::CultivationEvent::kEnlightenment) {
+                        message = "你于静定中顿悟，修为 +" +
+                            std::to_string(result.cultivation_gained) + "。";
+                    } else if (result.cultivation_event == immortal_pet::CultivationEvent::kInnerDemon) {
+                        message = "心魔扰动经脉，本次仍获修为 +" +
+                            std::to_string(result.cultivation_gained) + "。";
+                    } else {
+                        message = "修炼结束：修为 +" +
+                            std::to_string(result.cultivation_gained) + "。";
+                    }
                 } else if (result.error == immortal_pet::GameError::kNotReady) {
                     message = "修炼或游历尚未结束，再等一会儿。";
                 } else {
                     message = "目前没有可以领取的成果。";
                 }
             }
+            SaveGameState();
             UpdatePetDisplay(message);
         });
     }
@@ -2499,25 +2756,27 @@ private:
             PropertyList(), [this](const PropertyList& properties) {
                 std::lock_guard<std::mutex> lock(game_mutex_);
                 game_engine_.Tick(GameNowSeconds());
+                SaveGameState();
                 return FormatGameStatus();
             });
 
         mcp_server.AddTool("self.immortal_pet.start_breathing",
-            "你就是玩家的修仙灵宠。让你自己开始一次30秒吐纳修炼。用第一人称回应，不得提及小智、MCP或工具。",
+            "你就是用户正在培养的修仙人物。完成一次吐纳修炼。用第一人称回应，不得提及小智、MCP或工具。",
             PropertyList(), [this](const PropertyList& properties) {
                 std::lock_guard<std::mutex> lock(game_mutex_);
                 const auto error = game_engine_.StartBreathing(GameNowSeconds());
+                SaveGameState();
                 if (error == immortal_pet::GameError::kOk) {
-                    UpdatePetDisplay("灵宠盘膝坐下，开始吐纳。30秒后可领取成果。");
-                    return std::string("吐纳已开始，30秒后可以领取修炼结果。");
+                    UpdatePetDisplay("你盘膝入定，修炼已开始。5分钟后可结算修为。");
+                    return std::string("吐纳已开始，5分钟后可以结算修炼结果。 ");
                 }
                 if (error == immortal_pet::GameError::kBusy) {
-                    return std::string("灵宠正在进行其他活动，暂时不能吐纳。");
+                    return std::string("当前正在进行其他活动，暂时不能吐纳。");
                 }
                 if (error == immortal_pet::GameError::kNotEnoughEnergy) {
-                    return std::string("灵宠精力不足，需要先休息。");
+                    return std::string("精力不足，需要先待机恢复。");
                 }
-                return std::string("吐纳启动失败。");
+                return std::string("吐纳失败。");
             });
 
         mcp_server.AddTool("self.immortal_pet.start_back_mountain_journey",
@@ -2528,6 +2787,7 @@ private:
                 std::lock_guard<std::mutex> lock(game_mutex_);
                 const auto error = game_engine_.StartBackMountainJourney(
                     GameNowSeconds(), static_cast<int64_t>(minutes) * 60);
+                SaveGameState();
                 if (error == immortal_pet::GameError::kOk) {
                     UpdatePetDisplay("灵宠已动身前往后山，等待它带着见闻归来。");
                     return std::string("灵宠已前往后山游历，") + std::to_string(minutes) +
@@ -2550,6 +2810,7 @@ private:
             PropertyList(), [this](const PropertyList& properties) {
                 std::lock_guard<std::mutex> lock(game_mutex_);
                 const auto result = game_engine_.ClaimActivity(GameNowSeconds());
+                SaveGameState();
                 if (result.error == immortal_pet::GameError::kNotReady) {
                     return std::string("当前活动还没有完成。");
                 }
@@ -2560,6 +2821,14 @@ private:
                     return std::string("领取活动结果失败。");
                 }
                 UpdatePetDisplay("灵宠完成活动，带着新的修为回到了你身边。");
+                if (result.cultivation_event == immortal_pet::CultivationEvent::kEnlightenment) {
+                    return std::string("修炼完成，顿悟降临：修为 +") +
+                        std::to_string(result.cultivation_gained) + "。";
+                }
+                if (result.cultivation_event == immortal_pet::CultivationEvent::kInnerDemon) {
+                    return std::string("修炼完成，心魔稍阻道途：修为 +") +
+                        std::to_string(result.cultivation_gained) + "。";
+                }
                 return std::string("活动完成：获得修为 ") +
                     std::to_string(result.cultivation_gained) + "，灵石 " +
                     std::to_string(result.spirit_stones_gained) + "，材料 " +
@@ -2576,6 +2845,15 @@ public:
         InitializeTca9554();
 #endif
         InitializeAxp2101();
+#if CONFIG_IMMORTAL_PET_V2
+        InitializeRtc();
+        immortal_pet::GameState persisted_state;
+        if (game_state_store_.Load(&persisted_state)) {
+            game_engine_ = immortal_pet::GameEngine(persisted_state);
+            ESP_LOGI(TAG, "Loaded immortal-pet progression: cultivation=%lu energy=%u",
+                     static_cast<unsigned long>(persisted_state.cultivation), persisted_state.energy);
+        }
+#endif
         InitializeSpi();
 #if CONFIG_IMMORTAL_PET_V2
         InitializeTfCard();
@@ -2594,12 +2872,27 @@ public:
                      immortal_pet::GameClock::PeriodName(game_time.period));
         }
         const auto character_gender = player_profile_.LoadGender();
+        active_character_gender_ = character_gender;
+        if (character_gender != immortal_pet::CharacterGender::kUnset &&
+            player_profile_.LoadCreatedOn() == 0 && game_time.synchronized &&
+            !game_time.clock_rolled_back) {
+            if (player_profile_.SaveCreatedOnIfMissing(game_time.local_day)) {
+                ESP_LOGI(TAG, "Added creation date %d to existing character profile",
+                         game_time.local_day);
+            }
+        }
         display_->SetGenderSelectionHandler(
             [this](immortal_pet::CharacterGender gender) {
-                if (!player_profile_.SaveGender(gender)) {
-                    ESP_LOGE(TAG, "Failed to save character gender");
+                const auto game_time = game_clock_.Now();
+                if (!game_time.synchronized || game_time.clock_rolled_back) {
+                    ESP_LOGW(TAG, "Cannot create character before trusted time is available");
                     return false;
                 }
+                if (!player_profile_.SaveNewProfile(gender, game_time.local_day)) {
+                    ESP_LOGE(TAG, "Failed to save character profile");
+                    return false;
+                }
+                active_character_gender_ = gender;
                 if (tf_card_mounted_ &&
                     !display_->LoadCharacterAnimationsFromSd(gender)) {
                     ESP_LOGW(TAG, "Saved character gender, but matching SD assets failed to load");
@@ -2618,10 +2911,35 @@ public:
                 tf_game_content_error = "人物素材加载失败";
             } else {
                 display_->LoadHomepageDecorationsFromSd();
+                display_->RefreshRealmArtwork(game_engine_.state());
                 tf_game_content_ready = true;
             }
         }
         display_->SetTfGameContentReady(tf_game_content_ready, tf_game_content_error);
+        game_engine_.Tick(GameNowSeconds());
+        SaveGameState();
+        display_->UpdatePetStats(game_engine_.state());
+        if (tf_game_content_ready &&
+            active_character_gender_ != immortal_pet::CharacterGender::kUnset &&
+            game_engine_.state().activity == immortal_pet::Activity::kBreathing) {
+            const int64_t now = GameNowSeconds();
+            const auto& state = game_engine_.state();
+            if (now < 0) {
+                ESP_LOGW(TAG, "Cultivation is active but trusted time is unavailable after reboot");
+            } else {
+            const bool enlightenment_visible =
+                state.cultivation_event == immortal_pet::CultivationEvent::kEnlightenment &&
+                now >= state.activity_started_at +
+                    immortal_pet::GameEngine::kBreathingDurationSeconds / 2;
+            if (!display_->EnterCultivationScene(active_character_gender_, enlightenment_visible)) {
+                ESP_LOGE(TAG, "Failed to restore active cultivation scene after reboot");
+                display_->ExitCultivationScene(active_character_gender_);
+            } else {
+                display_->SetCultivationCountdown(state.activity_ends_at - now);
+                ESP_LOGI(TAG, "Restored active cultivation scene after reboot");
+            }
+            }
+        }
         if (tf_game_content_ready &&
             character_gender == immortal_pet::CharacterGender::kUnset) {
             display_->ShowGenderSelection();
@@ -2633,6 +2951,10 @@ public:
         InitializeTouch();
         InitializeButtons();
         InitializeTools();
+#if CONFIG_IMMORTAL_PET_V2
+        StartRtcSyncTimer();
+        StartGameActivityTimer();
+#endif
     }
 
     virtual AudioCodec* GetAudioCodec() override {

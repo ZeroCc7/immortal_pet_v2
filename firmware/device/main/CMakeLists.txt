@@ -43,6 +43,8 @@ if(CONFIG_IMMORTAL_PET_V2)
     list(APPEND SOURCES
         "immortal_pet/game_clock.cpp"
         "immortal_pet/game_engine.cpp"
+        "immortal_pet/game_state_store.cpp"
+        "immortal_pet/pcf85063_rtc.cpp"
         "immortal_pet/player_profile.cpp")
 endif()
 
@@ -96,6 +98,12 @@ file(GLOB BOARD_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/boards/${MANUFACTURER}/${BOARD_TYPE}/*.c
 )
 list(APPEND SOURCES ${BOARD_SOURCES})
+if(CONFIG_IMMORTAL_PET_V2)
+    list(APPEND SOURCES
+        "boards/waveshare/esp32-s3-touch-amoled-2.16/immortal_pet/cultivation_assets.cc"
+        "boards/waveshare/esp32-s3-touch-amoled-2.16/immortal_pet/cultivation_scene.cc"
+        "boards/waveshare/esp32-s3-touch-amoled-2.16/immortal_pet/home_assets.cc")
+endif()
 
 # ESP32-S3: use AFE audio engine and custom wake word
 list(APPEND SOURCES "audio/engines/afe_audio_engine.cc")
