@@ -4,8 +4,8 @@
 
 namespace immortal_pet {
 
-// Persists durable progression only. Timers and in-progress activities use the
-// monotonic clock and are intentionally restarted after a device reboot.
+// Persists the complete authoritative progression state, including an active
+// activity and its trusted wall-clock timestamps for reboot recovery.
 class GameStateStore {
 public:
     bool Load(GameState* state) const;

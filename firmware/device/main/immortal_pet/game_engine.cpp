@@ -30,7 +30,6 @@ GameError GameEngine::Tick(int64_t now) {
     }
 
     if (state_.energy == kMaxEnergy) {
-        state_.energy_anchor_at = now;
         return GameError::kOk;
     }
 
@@ -44,11 +43,7 @@ GameError GameEngine::Tick(int64_t now) {
     const int64_t applied = std::min(recovered, missing);
     state_.energy = static_cast<uint8_t>(state_.energy + applied);
 
-    if (state_.energy == kMaxEnergy) {
-        state_.energy_anchor_at = now;
-    } else {
-        state_.energy_anchor_at += recovered * kEnergyRecoverySeconds;
-    }
+    state_.energy_anchor_at += applied * kEnergyRecoverySeconds;
     return GameError::kOk;
 }
 
@@ -65,6 +60,7 @@ GameError GameEngine::StartBreathing(int64_t now) {
     }
 
     state_.energy -= kBreathingEnergyCost;
+    state_.energy_anchor_at = now;
     state_.activity = Activity::kBreathing;
     state_.activity_started_at = now;
     state_.activity_ends_at = now + kBreathingDurationSeconds;
@@ -90,6 +86,7 @@ GameError GameEngine::StartBackMountainJourney(int64_t now, int64_t duration_sec
     }
 
     state_.energy -= kJourneyEnergyCost;
+    state_.energy_anchor_at = now;
     state_.activity = Activity::kBackMountainJourney;
     state_.activity_started_at = now;
     state_.activity_ends_at = now + duration_seconds;

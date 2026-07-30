@@ -30,6 +30,7 @@
 #include "immortal_pet/game_clock.h"
 #include "immortal_pet/cultivation_scene.h"
 #include "immortal_pet/home_assets.h"
+#include "immortal_pet/pet_dialog.h"
 #include "immortal_pet/game_engine.h"
 #include "immortal_pet/game_state_store.h"
 #include "immortal_pet/pcf85063_rtc.h"
@@ -158,8 +159,6 @@ private:
     lv_obj_t* pet_realm_title_ = nullptr;
     lv_obj_t* pet_realm_layer_ = nullptr;
     lv_obj_t* cultivation_track_ = nullptr;
-    lv_obj_t* pet_dialog_panel_ = nullptr;
-    lv_obj_t* pet_dialog_label_ = nullptr;
     lv_obj_t* cultivation_fill_ = nullptr;
     lv_obj_t* pet_avatar_ = nullptr;
     lv_obj_t* pet_face_label_ = nullptr;
@@ -227,10 +226,7 @@ private:
     int layered_catalog_count_ = 0;
     std::unique_ptr<LvglRawImage> character_animations_[5];
     std::unique_ptr<LvglGif> character_gif_;
-    std::vector<std::string> pet_dialog_pages_;
-    size_t pet_dialog_page_index_ = 0;
-    lv_timer_t* pet_dialog_timer_ = nullptr;
-    lv_timer_t* pet_dialog_hide_timer_ = nullptr;
+    immortal_pet_board::PetDialog pet_dialog_;
     lv_timer_t* idle_animation_timer_ = nullptr;
     lv_timer_t* walk_animation_timer_ = nullptr;
     lv_timer_t* autonomous_behavior_timer_ = nullptr;
@@ -261,1112 +257,17 @@ private:
     lv_timer_t* idle_resume_timer_ = nullptr;
     size_t idle_frame_index_ = 0;
 
-    static int ScaleSpriteCoordinate(int value) {
-        return value * kCharacterScale / 256;
-    }
-
-    static void ExpandLayeredBounds(const LayeredAction& action, uint8_t direction,
-                                    bool& initialized, int& min_x, int& min_y,
-                                    int& max_x, int& max_y) {
-        if (direction >= action.directions.size()) {
-            return;
-        }
-        for (const auto& frame : action.directions[direction]) {
-            if (frame.image == nullptr) {
-                continue;
-            }
-            const auto* descriptor = frame.image->image_dsc();
-            const int right = frame.x + descriptor->header.w;
-            const int bottom = frame.y + descriptor->header.h;
-            if (!initialized) {
-                min_x = frame.x;
-                min_y = frame.y;
-                max_x = right;
-                max_y = bottom;
-                initialized = true;
-            } else {
-                min_x = std::min(min_x, static_cast<int>(frame.x));
-                min_y = std::min(min_y, static_cast<int>(frame.y));
-                max_x = std::max(max_x, right);
-                max_y = std::max(max_y, bottom);
-            }
-        }
-    }
-
-    void ShowLayeredFrame(const LayeredAction& action, uint8_t direction,
-                          size_t index, int min_x, int body_bottom_y,
-                          lv_obj_t* image) {
-        if (image == nullptr || direction >= action.directions.size()) {
-            return;
-        }
-        const auto& frames = action.directions[direction];
-        if (frames.empty()) {
-            lv_obj_add_flag(image, LV_OBJ_FLAG_HIDDEN);
-            return;
-        }
-        const auto& frame = frames[index % frames.size()];
-        if (frame.image == nullptr) {
-            return;
-        }
-        lv_obj_set_size(image, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-        lv_image_set_src(image, frame.image->image_dsc());
-        lv_image_set_inner_align(image, LV_IMAGE_ALIGN_TOP_LEFT);
-        lv_image_set_pivot(image, 0, 0);
-        lv_image_set_scale(image, kCharacterScale);
-        // Cultivation centers this object. Home sprites use absolute world
-        // coordinates, so clear that alignment before restoring the idle frame.
-        lv_obj_set_align(image, LV_ALIGN_DEFAULT);
-        lv_obj_set_pos(image,
-            layered_actor_x_ + ScaleSpriteCoordinate(frame.x - min_x),
-            kCharacterGroundY +
-                ScaleSpriteCoordinate(frame.y - body_bottom_y));
-        lv_obj_remove_flag(image, LV_OBJ_FLAG_HIDDEN);
-    }
-
-    void ShowLayeredActorFrame(bool walking, size_t index) {
-        if (cultivation_scene_.active() || !layered_actor_loaded_ || layered_body_ == nullptr) {
-            return;
-        }
-        const auto& body_action = walking ? layered_body_->walk : layered_body_->stand;
-        const uint8_t direction = walking ? layered_walk_direction_ : layered_stand_direction_;
-        const LayeredAction* weapon_action = nullptr;
-        if (layered_weapon_ != nullptr) {
-            weapon_action = walking ? &layered_weapon_->walk : &layered_weapon_->stand;
-        }
-        bool initialized = false;
-        int min_x = 0;
-        int min_y = 0;
-        int max_x = 0;
-        int max_y = 0;
-        ExpandLayeredBounds(body_action, direction, initialized, min_x, min_y, max_x, max_y);
-        if (!initialized) {
-            return;
-        }
-        // 只用人物本体确定脚底；武器可以伸到人物脚底以下，但不能抬高人物。
-        const int body_bottom_y = max_y;
-        if (weapon_action != nullptr) {
-            ExpandLayeredBounds(*weapon_action, direction, initialized,
-                                min_x, min_y, max_x, max_y);
-        }
-        layered_actor_width_ = ScaleSpriteCoordinate(max_x - min_x);
-        ShowLayeredFrame(body_action, direction, index, min_x, body_bottom_y,
-                         pet_character_image_);
-        if (layered_weapon_ != nullptr) {
-            ShowLayeredFrame(*weapon_action, direction, index, min_x, body_bottom_y,
-                             pet_weapon_image_);
-        } else if (pet_weapon_image_ != nullptr) {
-            lv_obj_add_flag(pet_weapon_image_, LV_OBJ_FLAG_HIDDEN);
-        }
-    }
-
-    static size_t Utf8PageEnd(const std::string& text, size_t start, size_t max_chars) {
-        size_t offset = start;
-        size_t chars = 0;
-        while (offset < text.size() && chars < max_chars) {
-            const unsigned char byte = static_cast<unsigned char>(text[offset]);
-            size_t width = 1;
-            if ((byte & 0xF0) == 0xF0) {
-                width = 4;
-            } else if ((byte & 0xE0) == 0xE0) {
-                width = 3;
-            } else if ((byte & 0xC0) == 0xC0) {
-                width = 2;
-            }
-            offset = std::min(offset + width, text.size());
-            ++chars;
-        }
-        return offset;
-    }
-
-    void ShowDialogPage() {
-        if (pet_dialog_label_ == nullptr || pet_dialog_page_index_ >= pet_dialog_pages_.size()) {
-            return;
-        }
-        lv_label_set_text(pet_dialog_label_, pet_dialog_pages_[pet_dialog_page_index_].c_str());
-    }
-
-    static void AdvanceDialogPage(lv_timer_t* timer) {
-        auto* display = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
-        if (display == nullptr || display->pet_dialog_page_index_ + 1 >=
-                                      display->pet_dialog_pages_.size()) {
-            lv_timer_pause(timer);
-            return;
-        }
-        ++display->pet_dialog_page_index_;
-        display->ShowDialogPage();
-        if (display->pet_dialog_hide_timer_ != nullptr) {
-            lv_timer_reset(display->pet_dialog_hide_timer_);
-        }
-    }
-
-    static void HideDialog(lv_timer_t* timer) {
-        auto* display = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
-        if (display == nullptr || display->pet_dialog_panel_ == nullptr ||
-            display->pet_dialog_label_ == nullptr) {
-            return;
-        }
-        lv_obj_add_flag(display->pet_dialog_panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(display->pet_dialog_label_, LV_OBJ_FLAG_HIDDEN);
-        lv_timer_pause(timer);
-    }
-
-    void ApplyHomeStatusBarStyle() {
-        if (top_bar_ != nullptr) {
-            lv_obj_set_style_bg_opa(top_bar_, LV_OPA_TRANSP, 0);
-        }
-        const lv_color_t status_text_color = lv_color_hex(0xE4F6EC);
-        if (network_label_ != nullptr) {
-            lv_obj_set_style_text_color(network_label_, status_text_color, 0);
-        }
-        if (mute_label_ != nullptr) {
-            lv_obj_set_style_text_color(mute_label_, status_text_color, 0);
-        }
-        if (battery_label_ != nullptr) {
-            lv_obj_set_style_text_color(battery_label_, status_text_color, 0);
-        }
-        if (tf_card_label_ != nullptr) {
-            lv_obj_set_style_text_color(tf_card_label_, status_text_color, 0);
-        }
-        if (notification_label_ != nullptr) {
-            lv_obj_set_style_text_color(notification_label_, status_text_color, 0);
-        }
-        if (status_label_ != nullptr) {
-            lv_obj_set_style_text_color(status_label_, status_text_color, 0);
-        }
-    }
-
-    static bool IsClockStatus(const char* status) {
-        return status != nullptr && std::strlen(status) == 5 &&
-            status[0] >= '0' && status[0] <= '9' &&
-            status[1] >= '0' && status[1] <= '9' &&
-            status[2] == ':' &&
-            status[3] >= '0' && status[3] <= '9' &&
-            status[4] >= '0' && status[4] <= '9';
-    }
-
-    static bool ReadSdFile(const char* path, std::vector<uint8_t>& data) {
-        FILE* file = fopen(path, "rb");
-        if (file == nullptr) {
-            return false;
-        }
-        fseek(file, 0, SEEK_END);
-        const long size = ftell(file);
-        rewind(file);
-        if (size <= 0) {
-            fclose(file);
-            return false;
-        }
-        data.resize(static_cast<size_t>(size));
-        const bool ok = fread(data.data(), 1, data.size(), file) == data.size();
-        fclose(file);
-        return ok;
-    }
-
-    static std::unique_ptr<LvglAllocatedImage> LoadLayeredPng(const char* path) {
-        std::vector<uint8_t> file_data;
-        if (!ReadSdFile(path, file_data)) {
-            ESP_LOGW(TAG, "Layered sprite frame missing: %s", path);
-            return nullptr;
-        }
-        auto* data = static_cast<uint8_t*>(
-            heap_caps_malloc(file_data.size(), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-        if (data == nullptr) {
-            data = static_cast<uint8_t*>(heap_caps_malloc(file_data.size(), MALLOC_CAP_8BIT));
-        }
-        if (data == nullptr) {
-            return nullptr;
-        }
-        memcpy(data, file_data.data(), file_data.size());
-        try {
-            return std::make_unique<LvglAllocatedImage>(data, file_data.size());
-        } catch (...) {
-            heap_caps_free(data);
-            return nullptr;
-        }
-    }
-
-    static bool LoadLayeredAction(cJSON* root, const char* action_name,
-                                  const std::string& asset_root,
-                                  LayeredAction& target) {
-        cJSON* action = cJSON_GetObjectItem(root, action_name);
-        if (!cJSON_IsObject(action)) {
-            return false;
-        }
-        cJSON* canvas = cJSON_GetObjectItem(action, "canvas");
-        cJSON* width = cJSON_GetObjectItem(canvas, "width");
-        cJSON* height = cJSON_GetObjectItem(canvas, "height");
-        cJSON* interval = cJSON_GetObjectItem(action, "frame_interval_ms");
-        cJSON* directions = cJSON_GetObjectItem(action, "directions");
-        if (!cJSON_IsNumber(width) || !cJSON_IsNumber(height) ||
-            !cJSON_IsArray(directions)) {
-            return false;
-        }
-        target.canvas_width = static_cast<int16_t>(width->valueint);
-        target.canvas_height = static_cast<int16_t>(height->valueint);
-        target.frame_interval_ms =
-            cJSON_IsNumber(interval) && interval->valueint > 0 ?
-                static_cast<uint32_t>(interval->valueint) : 100;
-        cJSON* direction = nullptr;
-        cJSON_ArrayForEach(direction, directions) {
-            cJSON* direction_index = cJSON_GetObjectItem(direction, "index");
-            cJSON* frames = cJSON_GetObjectItem(direction, "frames");
-            if (!cJSON_IsNumber(direction_index) || !cJSON_IsArray(frames) ||
-                direction_index->valueint < 0 || direction_index->valueint >= 8) {
-                return false;
-            }
-            auto& loaded = target.directions[direction_index->valueint];
-            cJSON* frame = nullptr;
-            cJSON_ArrayForEach(frame, frames) {
-                cJSON* file = cJSON_GetObjectItem(frame, "file");
-                cJSON* x = cJSON_GetObjectItem(frame, "x");
-                cJSON* y = cJSON_GetObjectItem(frame, "y");
-                if (!cJSON_IsString(file) || !cJSON_IsNumber(x) || !cJSON_IsNumber(y)) {
-                    return false;
-                }
-                char path[320];
-                snprintf(path, sizeof(path), "%s/%s/%s", asset_root.c_str(),
-                         action_name, file->valuestring);
-                LayeredFrame loaded_frame;
-                loaded_frame.image = LoadLayeredPng(path);
-                loaded_frame.x = static_cast<int16_t>(x->valueint);
-                loaded_frame.y = static_cast<int16_t>(y->valueint);
-                if (loaded_frame.image == nullptr) {
-                    return false;
-                }
-                loaded.push_back(std::move(loaded_frame));
-            }
-        }
-        return true;
-    }
-
-    static bool LoadLayeredAsset(const std::string& asset_root,
-                                 std::unique_ptr<LayeredAsset>& target) {
-        std::vector<uint8_t> json_data;
-        const std::string config_path = asset_root + "/actor.json";
-        if (!ReadSdFile(config_path.c_str(), json_data)) {
-            return false;
-        }
-        cJSON* root = cJSON_ParseWithLength(
-            reinterpret_cast<const char*>(json_data.data()), json_data.size());
-        if (root == nullptr) {
-            return false;
-        }
-        auto loaded = std::make_unique<LayeredAsset>();
-        const bool ok =
-            LoadLayeredAction(root, "stand", asset_root, loaded->stand) &&
-            LoadLayeredAction(root, "walk", asset_root, loaded->walk);
-        cJSON_Delete(root);
-        if (!ok) {
-            return false;
-        }
-        target = std::move(loaded);
-        return true;
-    }
-
-    static bool BodyMatchesProfile(const char* body,
-                                   immortal_pet::CharacterGender gender) {
-        if (body == nullptr) {
-            return false;
-        }
-        const char* expected_body = gender == immortal_pet::CharacterGender::kMale ?
-            "male_fire/bodies/06004" : "female_fire/bodies/07004";
-        return strcmp(body, expected_body) == 0;
-    }
-
-    static uint8_t CultivationRealmLayer(uint32_t cultivation) {
-        constexpr uint32_t kCultivationPerLayer = 100;
-        constexpr uint8_t kRealmCount = 8;
-        constexpr uint8_t kLayersPerRealm = 15;
-        constexpr uint8_t kMaxRealmLayer = kRealmCount * kLayersPerRealm;
-        if (cultivation == 0) {
-            return 0;
-        }
-        return static_cast<uint8_t>(std::min<uint32_t>(
-            (cultivation - 1) / kCultivationPerLayer + 1, kMaxRealmLayer));
-    }
-
-    void RefreshRealmImages() {
-        if (pet_hud_panel_ == nullptr) {
-            return;
-        }
-        if (pet_realm_title_ != nullptr) {
-            lv_obj_delete(pet_realm_title_);
-            pet_realm_title_ = nullptr;
-            pet_title_label_ = nullptr;
-        }
-        if (pet_realm_layer_ != nullptr) {
-            lv_obj_delete(pet_realm_layer_);
-            pet_realm_layer_ = nullptr;
-        }
-        if (const auto* realm_title = home_assets_.realm_title(); realm_title != nullptr) {
-            auto* title = lv_image_create(pet_hud_panel_);
-            lv_image_set_src(title, realm_title);
-            lv_obj_align(title, LV_ALIGN_TOP_LEFT, 72, 4);
-            lv_obj_add_flag(title, LV_OBJ_FLAG_HIDDEN);
-            pet_realm_title_ = title;
-        }
-        if (const auto* realm_layer = home_assets_.realm_layer(); realm_layer != nullptr) {
-            auto* layer = lv_image_create(pet_hud_panel_);
-            lv_image_set_src(layer, realm_layer);
-            lv_obj_align(layer, LV_ALIGN_TOP_LEFT, 173, 15);
-            lv_obj_add_flag(layer, LV_OBJ_FLAG_HIDDEN);
-            pet_realm_layer_ = layer;
-        }
-    }
-
-    bool LoadRealmArtworkForLayer(uint8_t realm_layer) {
-        if (!home_assets_.LoadRealmArtwork(realm_layer)) {
-            ESP_LOGW(TAG, "Realm artwork unavailable for layer %u",
-                     static_cast<unsigned>(realm_layer));
-            return false;
-        }
-        RefreshRealmImages();
-        displayed_realm_layer_ = realm_layer;
-        return true;
-    }
-
-    bool LoadLayeredActorFromSd(immortal_pet::CharacterGender gender,
-                                int requested_index = -1) {
-        constexpr const char* kRoot = "/sdcard/immortal_pet/layered_idle";
-        if (gender == immortal_pet::CharacterGender::kUnset) {
-            return false;
-        }
-        std::vector<uint8_t> json_data;
-        if (!ReadSdFile("/sdcard/immortal_pet/layered_idle/catalog.json", json_data)) {
-            return false;
-        }
-        cJSON* root = cJSON_ParseWithLength(
-            reinterpret_cast<const char*>(json_data.data()), json_data.size());
-        if (root == nullptr) {
-            return false;
-        }
-        cJSON* entries = cJSON_GetObjectItem(root, "entries");
-        const int entry_count = cJSON_IsArray(entries) ? cJSON_GetArraySize(entries) : 0;
-        int matching_count = 0;
-        for (int i = 0; i < entry_count; ++i) {
-            cJSON* candidate = cJSON_GetArrayItem(entries, i);
-            cJSON* candidate_body = cJSON_GetObjectItem(candidate, "body");
-            if (cJSON_IsString(candidate_body) &&
-                BodyMatchesProfile(candidate_body->valuestring, gender)) {
-                ++matching_count;
-            }
-        }
-        if (matching_count == 0) {
-            cJSON_Delete(root);
-            return false;
-        }
-
-        const int selected_matching_index = requested_index >= 0 ?
-            requested_index % matching_count :
-            static_cast<int>(esp_random() % matching_count);
-        cJSON* entry = nullptr;
-        int current_matching_index = 0;
-        for (int i = 0; i < entry_count; ++i) {
-            cJSON* candidate = cJSON_GetArrayItem(entries, i);
-            cJSON* candidate_body = cJSON_GetObjectItem(candidate, "body");
-            if (!cJSON_IsString(candidate_body) ||
-                !BodyMatchesProfile(candidate_body->valuestring, gender)) {
-                continue;
-            }
-            if (current_matching_index == selected_matching_index) {
-                entry = candidate;
-                break;
-            }
-            ++current_matching_index;
-        }
-        if (entry == nullptr) {
-            cJSON_Delete(root);
-            return false;
-        }
-        cJSON* body = cJSON_GetObjectItem(entry, "body");
-        if (!cJSON_IsString(body)) {
-            cJSON_Delete(root);
-            return false;
-        }
-        const std::string body_root = std::string(kRoot) + "/" + body->valuestring;
-        cJSON_Delete(root);
-
-        std::unique_ptr<LayeredAsset> loaded_body;
-        if (!LoadLayeredAsset(body_root, loaded_body)) {
-            return false;
-        }
-        layered_body_ = std::move(loaded_body);
-        // New characters begin unarmed. Weapon layers are loaded only after
-        // the later equipment system explicitly equips one.
-        layered_weapon_.reset();
-        layered_actor_loaded_ = true;
-        character_gender_ = gender;
-        layered_actor_x_ = 100;
-        layered_catalog_index_ = selected_matching_index;
-        layered_catalog_count_ = matching_count;
-        ESP_LOGI(TAG, "Layered idle actor [%d/%d]: body=%s weapon=none, free PSRAM=%u",
-                 selected_matching_index + 1, matching_count,
-                 body_root.c_str(),
-                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
-        return true;
-    }
-
-    void ShowIdleFrame() {
-        if (cultivation_scene_.active() || pet_character_image_ == nullptr) {
-            return;
-        }
-        if (layered_actor_loaded_) {
-            ShowLayeredActorFrame(false, female_initial_frame_index_);
-            return;
-        }
-        if (female_initial_loaded_) {
-            auto& frame = (*female_initial_idle_frames_)[female_initial_frame_index_];
-            if (frame != nullptr) {
-                lv_image_set_scale(pet_character_image_, kCharacterScale);
-                lv_image_set_src(pet_character_image_, frame->image_dsc());
-            }
-            return;
-        }
-        if (idle_frames_[idle_frame_index_] != nullptr) {
-            lv_image_set_src(pet_character_image_, idle_frames_[idle_frame_index_]->image_dsc());
-        }
-    }
-
-    void StartIdleAnimation() {
-        if (cultivation_scene_.active()) {
-            return;
-        }
-        if ((!layered_actor_loaded_ && !female_initial_loaded_ && idle_frames_[0] == nullptr) ||
-            pet_character_image_ == nullptr) {
-            return;
-        }
-        character_gif_.reset();
-        if (walk_animation_timer_ != nullptr) {
-            lv_timer_pause(walk_animation_timer_);
-        }
-        idle_frame_index_ = 0;
-        female_initial_frame_index_ = 0;
-        ShowIdleFrame();
-        if (idle_animation_timer_ == nullptr) {
-            idle_animation_timer_ = lv_timer_create([](lv_timer_t* timer) {
-                auto* display = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
-                if (display->layered_actor_loaded_) {
-                    const auto& frames = display->layered_body_->stand.directions[
-                        display->layered_stand_direction_];
-                    if (!frames.empty()) {
-                        display->female_initial_frame_index_ =
-                            (display->female_initial_frame_index_ + 1) % frames.size();
-                    }
-                } else if (display->female_initial_loaded_) {
-                    display->female_initial_frame_index_ =
-                        (display->female_initial_frame_index_ + 1) %
-                        CustomLcdDisplay::kFemaleInitialIdleFrameCount;
-                } else {
-                    display->idle_frame_index_ =
-                        (display->idle_frame_index_ + 1) % CustomLcdDisplay::kIdleFrameCount;
-                }
-                display->ShowIdleFrame();
-            }, layered_actor_loaded_ && layered_body_ != nullptr ?
-                layered_body_->stand.frame_interval_ms : 120, this);
-        } else {
-            if (layered_actor_loaded_ && layered_body_ != nullptr) {
-                lv_timer_set_period(idle_animation_timer_,
-                                    layered_body_->stand.frame_interval_ms);
-            }
-            lv_timer_resume(idle_animation_timer_);
-            lv_timer_reset(idle_animation_timer_);
-        }
-    }
-
-    void StartWalkAnimation(int target_x) {
-        if (cultivation_scene_.active()) {
-            return;
-        }
-        const bool legacy_ready = female_initial_loaded_ &&
-            female_initial_walk_frames_ != nullptr && (*female_initial_walk_frames_)[0] != nullptr;
-        const bool layered_ready = layered_actor_loaded_ && layered_body_ != nullptr &&
-            !layered_body_->walk.directions[layered_walk_direction_].empty();
-        if ((!legacy_ready && !layered_ready) || pet_character_image_ == nullptr) {
-            return;
-        }
-        character_gif_.reset();
-        if (idle_animation_timer_ != nullptr) {
-            lv_timer_pause(idle_animation_timer_);
-        }
-        female_initial_frame_index_ = 0;
-        walk_start_x_ = layered_actor_loaded_ ? layered_actor_x_ :
-            lv_obj_get_x(pet_character_image_);
-        const int maximum_x = layered_actor_loaded_ ?
-            std::max(kCharacterMinX, 480 - layered_actor_width_ - 4) :
-            kCharacterMaxX;
-        walk_target_x_ = std::clamp(target_x, kCharacterMinX, maximum_x);
-        walk_elapsed_ms_ = 0;
-        walk_started_at_ms_ = lv_tick_get();
-        const uint32_t walk_distance =
-            static_cast<uint32_t>(std::abs(walk_target_x_ - walk_start_x_));
-        const uint32_t minimum_walk_duration = layered_actor_loaded_ ?
-            static_cast<uint32_t>(
-                layered_body_->walk.directions[layered_walk_direction_].size()) *
-                layered_body_->walk.frame_interval_ms :
-            kMinimumWalkDurationMs;
-        walk_duration_ms_ = std::max(
-            minimum_walk_duration,
-            (walk_distance * 1000U + kWalkSpeedPixelsPerSecond - 1U) /
-                kWalkSpeedPixelsPerSecond);
-        if (layered_actor_loaded_) {
-            ShowLayeredActorFrame(true, 0);
-        } else {
-            lv_image_set_scale(pet_character_image_, kCharacterScale);
-            lv_image_set_src(pet_character_image_, (*female_initial_walk_frames_)[0]->image_dsc());
-        }
-        if (walk_animation_timer_ == nullptr) {
-            walk_animation_timer_ = lv_timer_create([](lv_timer_t* timer) {
-                auto* display = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
-                display->walk_elapsed_ms_ = std::min(
-                    lv_tick_elaps(display->walk_started_at_ms_),
-                    display->walk_duration_ms_);
-                const uint32_t frame_interval = display->layered_actor_loaded_ ?
-                    display->layered_body_->walk.frame_interval_ms :
-                    CustomLcdDisplay::kWalkFrameIntervalMs;
-                const size_t frame_count = display->layered_actor_loaded_ ?
-                    display->layered_body_->walk.directions[
-                        display->layered_walk_direction_].size() :
-                    CustomLcdDisplay::kFemaleInitialWalkFrameCount;
-                const size_t next_frame =
-                    static_cast<size_t>(display->walk_elapsed_ms_ / frame_interval) %
-                    frame_count;
-                if (next_frame != display->female_initial_frame_index_) {
-                    display->female_initial_frame_index_ = next_frame;
-                    if (display->layered_actor_loaded_) {
-                        display->ShowLayeredActorFrame(true, next_frame);
-                    } else {
-                        auto& frame = (*display->female_initial_walk_frames_)[next_frame];
-                        if (display->pet_character_image_ != nullptr && frame != nullptr) {
-                            lv_image_set_src(display->pet_character_image_, frame->image_dsc());
-                        }
-                    }
-                }
-                const int distance = display->walk_target_x_ - display->walk_start_x_;
-                const int x = display->walk_start_x_ + distance *
-                    static_cast<int>(display->walk_elapsed_ms_) /
-                    static_cast<int>(display->walk_duration_ms_);
-                if (display->layered_actor_loaded_) {
-                    display->layered_actor_x_ = x;
-                    display->ShowLayeredActorFrame(true, next_frame);
-                } else if (display->pet_character_image_ != nullptr) {
-                    lv_obj_set_x(display->pet_character_image_, x);
-                }
-                if (display->walk_elapsed_ms_ == display->walk_duration_ms_) {
-                    lv_timer_pause(timer);
-                }
-            }, kMovementTickMs, this);
-        } else {
-            lv_timer_resume(walk_animation_timer_);
-            lv_timer_reset(walk_animation_timer_);
-        }
-    }
-
-    bool LoadPngFrameSequenceFromSd(const char* directory, size_t frame_count,
-                                    FemaleInitialFrames& target) {
-        if (frame_count == 0 || frame_count > kFemaleInitialFrameCapacity) {
-            return false;
-        }
-        FemaleInitialFrames loaded_frames;
-        for (size_t i = 0; i < frame_count; ++i) {
-            char path[128];
-            snprintf(path, sizeof(path), "%s/frame_%03u.png", directory,
-                     static_cast<unsigned>(i));
-            FILE* file = fopen(path, "rb");
-            if (file == nullptr) {
-                ESP_LOGW(TAG, "Female initial frame missing: %s", path);
-                return false;
-            }
-            fseek(file, 0, SEEK_END);
-            const long size = ftell(file);
-            rewind(file);
-            if (size <= 0) {
-                ESP_LOGW(TAG, "Female initial frame is empty: %s", path);
-                fclose(file);
-                return false;
-            }
-            auto* data = static_cast<uint8_t*>(
-                heap_caps_malloc(static_cast<size_t>(size), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-            if (data == nullptr) {
-                data = static_cast<uint8_t*>(heap_caps_malloc(static_cast<size_t>(size), MALLOC_CAP_8BIT));
-            }
-            if (data == nullptr || fread(data, 1, static_cast<size_t>(size), file) != static_cast<size_t>(size)) {
-                ESP_LOGW(TAG, "Failed to read female initial frame: %s", path);
-                if (data != nullptr) {
-                    heap_caps_free(data);
-                }
-                fclose(file);
-                return false;
-            }
-            fclose(file);
-            try {
-                loaded_frames[i] = std::make_unique<LvglAllocatedImage>(data, static_cast<size_t>(size));
-            } catch (...) {
-                heap_caps_free(data);
-                ESP_LOGW(TAG, "Failed to decode female initial frame: %s", path);
-                return false;
-            }
-        }
-        target = std::move(loaded_frames);
-        return true;
-    }
-
-    bool LoadFemaleInitialFramesFromSd(uint8_t stand_direction, uint8_t walk_direction) {
-        if (female_initial_idle_05_frames_[0] == nullptr) {
-            if (!LoadPngFrameSequenceFromSd(
-                    "/sdcard/immortal_pet/female_initial/stand/direction_05",
-                    kFemaleInitialIdleFrameCount, female_initial_idle_05_frames_) ||
-                !LoadPngFrameSequenceFromSd(
-                    "/sdcard/immortal_pet/female_initial/stand/direction_06",
-                    kFemaleInitialIdleFrameCount, female_initial_idle_06_frames_) ||
-                !LoadPngFrameSequenceFromSd(
-                    "/sdcard/immortal_pet/female_initial/walk/direction_00",
-                    kFemaleInitialWalkFrameCount, female_initial_walk_00_frames_) ||
-                !LoadPngFrameSequenceFromSd(
-                    "/sdcard/immortal_pet/female_initial/walk/direction_04",
-                    kFemaleInitialWalkFrameCount, female_initial_walk_04_frames_)) {
-                return false;
-            }
-            ESP_LOGI(TAG, "Female initial animation frames preloaded from SD card, free PSRAM: %u",
-                     static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
-        }
-        female_initial_idle_frames_ = stand_direction == 5 ?
-            &female_initial_idle_05_frames_ : &female_initial_idle_06_frames_;
-        female_initial_walk_frames_ = walk_direction == 4 ?
-            &female_initial_walk_04_frames_ : &female_initial_walk_00_frames_;
-        return true;
-    }
-
-    void UpdateDongfuSceneBackground() {
-        if (scene_ == nullptr || scene_day_background_ == nullptr ||
-            scene_night_background_ == nullptr) {
-            return;
-        }
-        const auto game_time = game_clock_ == nullptr ? immortal_pet::GameTime{} : game_clock_->Now();
-        const bool use_night = game_time.synchronized && !game_time.clock_rolled_back &&
-            game_time.is_night;
-        if (scene_background_initialized_ && scene_night_active_ == use_night) {
-            return;
-        }
-        scene_night_active_ = use_night;
-        scene_background_initialized_ = true;
-        const auto* background = use_night ? scene_night_background_->image_dsc() :
-            scene_day_background_->image_dsc();
-        lv_obj_set_style_bg_image_src(scene_, background, 0);
-        lv_obj_set_style_bg_image_opa(scene_, LV_OPA_COVER, 0);
-        lv_obj_invalidate(scene_);
-        ESP_LOGI(TAG, "Dongfu scene switched to %s background", use_night ? "night" : "day");
-    }
-
-    static void AnimateHomeClock(void* object, int32_t translate_y) {
-        lv_obj_set_style_translate_y(static_cast<lv_obj_t*>(object), translate_y, 0);
-    }
-
-    void RefreshHomeClock(bool animate) {
-        if (status_label_ == nullptr || game_clock_ == nullptr) {
-            return;
-        }
-        const auto game_time = game_clock_->Now();
-        if (!game_time.synchronized || game_time.clock_rolled_back) {
-            lv_label_set_text(status_label_, "--:--");
-            return;
-        }
-
-        const time_t now = static_cast<time_t>(game_time.unix_seconds);
-        tm local_time = {};
-        if (localtime_r(&now, &local_time) == nullptr) {
-            return;
-        }
-        char text[32] = {};
-        if (home_clock_shows_date_) {
-            std::snprintf(text, sizeof(text), "%d/%02d", local_time.tm_mon + 1,
-                          local_time.tm_mday);
-        } else {
-            std::strftime(text, sizeof(text), "%H:%M", &local_time);
-        }
-        lv_label_set_text(status_label_, text);
-        lv_obj_remove_flag(status_label_, LV_OBJ_FLAG_HIDDEN);
-        if (animate) {
-            lv_anim_t animation;
-            lv_anim_init(&animation);
-            lv_anim_set_var(&animation, status_label_);
-            lv_anim_set_values(&animation, 8, 0);
-            lv_anim_set_duration(&animation, 220);
-            lv_anim_set_exec_cb(&animation, AnimateHomeClock);
-            lv_anim_start(&animation);
-        }
-    }
-
-    static void HomeClockTimerCallback(lv_timer_t* timer) {
-        auto* display = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
-        display->home_clock_shows_date_ = !display->home_clock_shows_date_;
-        display->RefreshHomeClock(true);
-    }
-
-    void StartAutonomousBehavior() {
-        if (!female_initial_loaded_) {
-            return;
-        }
-        if (autonomous_behavior_timer_ == nullptr) {
-            autonomous_behavior_timer_ = lv_timer_create([](lv_timer_t* timer) {
-                auto* display = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
-                if (!display->female_initial_loaded_) {
-                    return;
-                }
-                if (display->autonomous_walking_) {
-                    if (display->walk_animation_timer_ != nullptr &&
-                        !lv_timer_get_paused(display->walk_animation_timer_)) {
-                        // The animation timer owns the position. Do not snap to the target
-                        // just because this behavior timer happens to run first.
-                        lv_timer_set_period(timer, CustomLcdDisplay::kMovementTickMs);
-                        lv_timer_reset(timer);
-                        return;
-                    }
-                    display->autonomous_walking_ = false;
-                    if (display->layered_actor_loaded_) {
-                        display->layered_actor_x_ = display->walk_target_x_;
-                    } else if (display->pet_character_image_ != nullptr) {
-                        lv_obj_set_x(display->pet_character_image_, display->walk_target_x_);
-                    }
-                    const uint8_t stand_direction = (esp_random() & 1) ? 5 : 6;
-                    display->layered_stand_direction_ = stand_direction;
-                    if (!display->layered_actor_loaded_ &&
-                        !display->LoadFemaleInitialFramesFromSd(stand_direction, 0)) {
-                        lv_timer_set_period(timer, 5000);
-                        lv_timer_reset(timer);
-                        return;
-                    }
-                    display->StartIdleAnimation();
-                    lv_timer_set_period(timer, 3000 + esp_random() % 4000);
-                    lv_timer_reset(timer);
-                    return;
-                }
-                const uint8_t stand_direction = (esp_random() & 1) ? 5 : 6;
-                const bool should_walk = esp_random() % 3 == 0;
-                const int maximum_x = display->layered_actor_loaded_ ?
-                    std::max(CustomLcdDisplay::kCharacterMinX,
-                             480 - display->layered_actor_width_ - 4) :
-                    CustomLcdDisplay::kCharacterMaxX;
-                int target_x = display->pet_character_image_ == nullptr ? 90 :
-                    CustomLcdDisplay::kCharacterMinX + static_cast<int>(esp_random() %
-                        (maximum_x - CustomLcdDisplay::kCharacterMinX + 1));
-                const int current_x = display->layered_actor_loaded_ ?
-                    display->layered_actor_x_ :
-                    (display->pet_character_image_ == nullptr ? 90 :
-                        lv_obj_get_x(display->pet_character_image_));
-                if (should_walk && std::abs(target_x - current_x) < 40) {
-                    target_x = current_x <
-                        (CustomLcdDisplay::kCharacterMinX + maximum_x) / 2 ?
-                        maximum_x : CustomLcdDisplay::kCharacterMinX;
-                }
-                const uint8_t walk_direction = target_x < current_x ? 0 : 4;
-                display->layered_stand_direction_ = stand_direction;
-                display->layered_walk_direction_ = walk_direction;
-                if (!display->layered_actor_loaded_ &&
-                    !display->LoadFemaleInitialFramesFromSd(stand_direction, walk_direction)) {
-                    lv_timer_set_period(timer, 5000);
-                    lv_timer_reset(timer);
-                    return;
-                }
-                if (should_walk) {
-                    display->autonomous_walking_ = true;
-                    display->StartWalkAnimation(target_x);
-                    lv_timer_set_period(timer, CustomLcdDisplay::kMovementTickMs);
-                } else {
-                    display->StartIdleAnimation();
-                    lv_timer_set_period(timer, 3000 + esp_random() % 4000);
-                }
-                lv_timer_reset(timer);
-            }, 4000, this);
-        } else {
-            lv_timer_resume(autonomous_behavior_timer_);
-            lv_timer_reset(autonomous_behavior_timer_);
-        }
-        if (layered_actor_loaded_ && layered_weapon_ != nullptr &&
-            layered_actor_change_timer_ == nullptr) {
-            layered_actor_change_timer_ = lv_timer_create([](lv_timer_t* timer) {
-                auto* display = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
-                if (display == nullptr || display->autonomous_walking_ ||
-                    display->character_gif_ != nullptr) {
-                    lv_timer_reset(timer);
-                    return;
-                }
-                if (display->idle_animation_timer_ != nullptr) {
-                    lv_timer_pause(display->idle_animation_timer_);
-                }
-#if CONFIG_IMMORTAL_PET_LAYERED_ASSET_TEST
-                const int next_index = display->layered_catalog_index_ + 1;
-                if (display->LoadLayeredActorFromSd(
-                        display->character_gender_, next_index)) {
-                    display->layered_stand_direction_ =
-                        (display->layered_catalog_index_ & 1) ? 5 : 6;
-                    display->layered_walk_direction_ =
-                        (display->layered_catalog_index_ & 1) ? 4 : 0;
-                }
-#else
-                if (display->LoadLayeredActorFromSd(display->character_gender_)) {
-                    display->layered_stand_direction_ = (esp_random() & 1) ? 5 : 6;
-                    display->layered_walk_direction_ = 0;
-                }
-#endif
-                display->StartIdleAnimation();
-#if CONFIG_IMMORTAL_PET_LAYERED_ASSET_TEST
-                lv_timer_set_period(timer, 10000);
-#else
-                lv_timer_set_period(timer, 60000 + esp_random() % 60000);
-#endif
-                lv_timer_reset(timer);
-            },
-#if CONFIG_IMMORTAL_PET_LAYERED_ASSET_TEST
-            10000,
-#else
-            60000 + esp_random() % 60000,
-#endif
-            this);
-        }
-    }
-
-    void ResumeIdleAfterAction() {
-        if (idle_resume_timer_ != nullptr) {
-            lv_timer_delete(idle_resume_timer_);
-        }
-        idle_resume_timer_ = lv_timer_create([](lv_timer_t* timer) {
-            auto* display = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
-            display->idle_resume_timer_ = nullptr;
-            display->StartIdleAnimation();
-            lv_timer_delete(timer);
-        }, 1400, this);
-        lv_timer_set_repeat_count(idle_resume_timer_, 1);
-    }
-
-    void PlayCharacterAnimation(CharacterAnimation animation) {
-        const auto index = static_cast<size_t>(animation);
-        if (pet_character_image_ == nullptr || index >= 5 ||
-            character_animations_[index] == nullptr) {
-            return;
-        }
-
-        if (idle_animation_timer_ != nullptr) {
-            lv_timer_pause(idle_animation_timer_);
-        }
-        if (walk_animation_timer_ != nullptr) {
-            lv_timer_pause(walk_animation_timer_);
-        }
-        if (pet_weapon_image_ != nullptr) {
-            lv_obj_add_flag(pet_weapon_image_, LV_OBJ_FLAG_HIDDEN);
-        }
-        character_gif_.reset();
-        lv_image_set_scale(pet_character_image_, 342);
-        character_gif_ = std::make_unique<LvglGif>(character_animations_[index]->image_dsc());
-        if (!character_gif_->IsLoaded()) {
-            character_gif_.reset();
-            return;
-        }
-        lv_image_set_src(pet_character_image_, character_gif_->image_dsc());
-        character_gif_->SetFrameCallback([this]() {
-            if (pet_character_image_ != nullptr && character_gif_ != nullptr) {
-                lv_image_set_src(pet_character_image_, character_gif_->image_dsc());
-            }
-        });
-        character_gif_->Start();
-        ResumeIdleAfterAction();
-    }
-
-    void PlayActionAnimation(PetAction action) {
-        switch (action) {
-            case PetAction::kBreathing:
-                PlayCharacterAnimation(CharacterAnimation::kCultivate);
-                break;
-            case PetAction::kJourney:
-                if (female_initial_loaded_) {
-                    StartWalkAnimation(layered_actor_loaded_ ? layered_actor_x_ :
-                                       lv_obj_get_x(pet_character_image_));
-                } else {
-                    PlayCharacterAnimation(CharacterAnimation::kJourney);
-                }
-                break;
-            case PetAction::kClaim:
-                PlayCharacterAnimation(CharacterAnimation::kClaim);
-                break;
-            case PetAction::kTalk:
-                PlayCharacterAnimation(CharacterAnimation::kTalk);
-                break;
-        }
-    }
-
-    // This callback runs on LVGL's UI task, which already owns the display lock.
-    void ShowActionFeedback(const char* text) {
-        if (pet_dialog_label_ == nullptr || pet_dialog_panel_ == nullptr || text == nullptr) {
-            return;
-        }
-        if (pet_dialog_timer_ != nullptr) {
-            lv_timer_pause(pet_dialog_timer_);
-        }
-        if (pet_dialog_hide_timer_ != nullptr) {
-            lv_timer_reset(pet_dialog_hide_timer_);
-            lv_timer_resume(pet_dialog_hide_timer_);
-        }
-        lv_label_set_text(pet_dialog_label_, text);
-        lv_obj_remove_flag(pet_dialog_panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(pet_dialog_label_, LV_OBJ_FLAG_HIDDEN);
-    }
-
-    static void OnActionClicked(lv_event_t* event) {
-        auto* binding = static_cast<ActionBinding*>(lv_event_get_user_data(event));
-        if (binding == nullptr || binding->display == nullptr ||
-            !binding->display->action_handler_) {
-            return;
-        }
-        ESP_LOGI(TAG, "Homepage action selected: %d", static_cast<int>(binding->action));
-        binding->display->action_handler_(binding->action);
-    }
-
-    static void OnGenderSelected(lv_event_t* event) {
-        auto* binding = static_cast<GenderBinding*>(lv_event_get_user_data(event));
-        if (binding == nullptr || binding->display == nullptr ||
-            !binding->display->gender_selection_handler_) {
-            return;
-        }
-        if (!binding->display->gender_selection_handler_(binding->gender)) {
-            if (binding->display->gender_selection_message_ != nullptr) {
-                lv_label_set_text(binding->display->gender_selection_message_,
-                                  "无法完成建档，请检查 TF 卡后重试");
-            }
-            return;
-        }
-        if (binding->display->gender_selection_overlay_ != nullptr) {
-            lv_obj_delete(binding->display->gender_selection_overlay_);
-            binding->display->gender_selection_overlay_ = nullptr;
-            binding->display->gender_selection_message_ = nullptr;
-        }
-        binding->display->gender_selection_requested_ = false;
-    }
-
-    void CreateGenderIcon(lv_obj_t* parent,
-                          immortal_pet::CharacterGender gender) {
-        static constexpr lv_point_precise_t kMaleStem[] = {{25, 25}, {44, 6}};
-        static constexpr lv_point_precise_t kMaleArrow[] = {{33, 6}, {44, 6}, {44, 17}};
-        static constexpr lv_point_precise_t kFemaleStem[] = {{25, 30}, {25, 46}};
-        static constexpr lv_point_precise_t kFemaleCross[] = {{17, 39}, {33, 39}};
-        constexpr auto kIconColor = 0xE8C986;
-
-        auto* icon = lv_obj_create(parent);
-        lv_obj_remove_style_all(icon);
-        lv_obj_set_size(icon, 50, 50);
-        lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 9);
-
-        auto* circle = lv_obj_create(icon);
-        lv_obj_remove_style_all(circle);
-        lv_obj_set_size(circle, 28, 28);
-        lv_obj_set_style_radius(circle, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_opa(circle, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(circle, 3, 0);
-        lv_obj_set_style_border_color(circle, lv_color_hex(kIconColor), 0);
-        lv_obj_align(circle, LV_ALIGN_TOP_MID, 0, 3);
-
-        const auto create_line = [icon](const lv_point_precise_t* points,
-                                        size_t point_count) {
-            auto* line = lv_line_create(icon);
-            lv_obj_set_size(line, 50, 50);
-            lv_line_set_points(line, points, point_count);
-            lv_obj_set_style_line_width(line, 3, 0);
-            lv_obj_set_style_line_rounded(line, true, 0);
-            lv_obj_set_style_line_color(line, lv_color_hex(kIconColor), 0);
-        };
-        if (gender == immortal_pet::CharacterGender::kMale) {
-            create_line(kMaleStem, 2);
-            create_line(kMaleArrow, 3);
-        } else {
-            create_line(kFemaleStem, 2);
-            create_line(kFemaleCross, 2);
-        }
-    }
-
-    void CreateGenderButton(lv_obj_t* parent, int index, const char* label,
-                            immortal_pet::CharacterGender gender, int x) {
-        auto* button = lv_button_create(parent);
-        lv_obj_set_size(button, 168, 116);
-        lv_obj_set_style_radius(button, 20, 0);
-        lv_obj_set_style_bg_color(button, lv_color_hex(0x174C43), 0);
-        lv_obj_set_style_border_width(button, 2, 0);
-        lv_obj_set_style_border_color(button, lv_color_hex(0xCDAA63), 0);
-        lv_obj_align(button, LV_ALIGN_CENTER, x, 34);
-
-        auto* text = lv_label_create(button);
-        lv_label_set_text(text, label);
-        lv_obj_set_style_text_color(text, lv_color_hex(0xFFF0C9), 0);
-        lv_obj_align(text, LV_ALIGN_BOTTOM_MID, 0, -10);
-        CreateGenderIcon(button, gender);
-
-        gender_bindings_[index] = {this, gender};
-        lv_obj_add_event_cb(button, OnGenderSelected, LV_EVENT_CLICKED,
-                            &gender_bindings_[index]);
-    }
-
-    void CreateActionButton(lv_obj_t* parent, int index, const char* label,
-                            const char* icon, PetAction action,
-                            const lv_font_t* icon_font) {
-        auto* button = lv_obj_create(parent);
-        lv_obj_set_size(button, 108, kActionButtonHeight);
-        const auto* action_art = index >= 0 && index < 4 ?
-            home_assets_.action_background(static_cast<size_t>(index)) : nullptr;
-        const bool has_action_art = action_art != nullptr;
-        if (has_action_art) {
-            lv_obj_set_style_border_width(button, 0, 0);
-            lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
-        } else {
-            lv_obj_set_style_radius(button, 14, 0);
-            lv_obj_set_style_border_width(button, 1, 0);
-            lv_obj_set_style_border_color(button, lv_color_hex(0xCDAA63), 0);
-            lv_obj_set_style_bg_color(button, lv_color_hex(0x174C43), 0);
-            lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
-        }
-        if (has_action_art) {
-            auto* icon = lv_image_create(button);
-            lv_image_set_src(icon, action_art);
-            // Generated assets are normalized to a 160px square canvas.
-            lv_image_set_scale(icon, 166);
-            lv_obj_center(icon);
-        }
-        lv_obj_set_style_pad_all(button, 0, 0);
-        lv_obj_remove_flag(button, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
-
-        if (!has_action_art) {
-            auto* icon_label = lv_label_create(button);
-            lv_label_set_text(icon_label, icon);
-            lv_obj_set_style_text_font(icon_label, icon_font, 0);
-            lv_obj_set_style_text_color(icon_label, lv_color_hex(0xE8C986), 0);
-            lv_obj_align(icon_label, LV_ALIGN_TOP_MID, 0, 12);
-
-            auto* text = lv_label_create(button);
-            lv_label_set_text(text, label);
-            lv_obj_set_style_text_color(text, lv_color_hex(0xFFF0C9), 0);
-            lv_obj_align(text, LV_ALIGN_BOTTOM_MID, 0, -10);
-        }
-
-        action_bindings_[index] = {this, action};
-        lv_obj_add_event_cb(button, OnActionClicked, LV_EVENT_CLICKED, &action_bindings_[index]);
-    }
+    #include "immortal_pet/layered_idle_actor_01.inc"
+    #include "immortal_pet/layered_idle_actor_02.inc"
+    #include "immortal_pet/layered_idle_actor_03.inc"
+    #include "immortal_pet/layered_idle_actor_04.inc"
+    #include "immortal_pet/layered_idle_actor_05.inc"
+    #include "immortal_pet/layered_idle_actor_06.inc"
+    #include "immortal_pet/layered_idle_actor_07.inc"
 
 #endif
 
 public:
-    static void rounder_event_cb(lv_event_t* e) {
-        lv_area_t* area = (lv_area_t* )lv_event_get_param(e);
-        uint16_t x1 = area->x1;
-        uint16_t x2 = area->x2;
-
-        uint16_t y1 = area->y1;
-        uint16_t y2 = area->y2;
-
-        // round the start of coordinate down to the nearest 2M number
-        area->x1 = (x1 >> 1) << 1;
-        area->y1 = (y1 >> 1) << 1;
-        // round the end of coordinate up to the nearest 2N+1 number
-        area->x2 = ((x2 >> 1) << 1) + 1;
-        area->y2 = ((y2 >> 1) << 1) + 1;
-    }
-
     static void ReadTouchSafely(lv_indev_t* indev, lv_indev_data_t* data) {
         data->state = LV_INDEV_STATE_RELEASED;
         auto touch = static_cast<esp_lcd_touch_handle_t>(lv_indev_get_user_data(indev));
@@ -1653,7 +554,8 @@ public:
             lv_obj_remove_flag(cultivation_track_, LV_OBJ_FLAG_HIDDEN);
             constexpr uint32_t kCultivationCap = 100;
             constexpr int32_t kTrackInnerWidth = 168;
-            const uint32_t cultivation = std::min(displayed_cultivation_, kCultivationCap);
+            const uint32_t cultivation =
+                CultivationProgressInCurrentLayer(displayed_cultivation_);
             lv_obj_set_width(cultivation_fill_, std::max<int32_t>(1, static_cast<int32_t>(
                 (cultivation * kTrackInnerWidth) / kCultivationCap)));
         }
@@ -1703,36 +605,7 @@ public:
         lv_obj_add_flag(pet_weapon_image_, LV_OBJ_FLAG_HIDDEN);
         StartIdleAnimation();
 
-        pet_dialog_panel_ = lv_obj_create(screen);
-        lv_obj_set_size(pet_dialog_panel_, 404, 86);
-        lv_obj_set_style_radius(pet_dialog_panel_, 0, 0);
-        lv_obj_set_style_border_width(pet_dialog_panel_, 0, 0);
-        lv_obj_set_style_bg_opa(pet_dialog_panel_, LV_OPA_TRANSP, 0);
-        if (const auto* dialog_background = home_assets_.dialog_background(); dialog_background != nullptr) {
-            lv_obj_set_style_bg_image_src(pet_dialog_panel_, dialog_background, 0);
-            lv_obj_set_style_bg_image_opa(pet_dialog_panel_, LV_OPA_COVER, 0);
-        }
-        lv_obj_remove_flag(pet_dialog_panel_, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_remove_flag(pet_dialog_panel_, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(pet_dialog_panel_, LV_ALIGN_TOP_RIGHT, -12, 108);
-
-        pet_dialog_label_ = lv_label_create(pet_dialog_panel_);
-        lv_obj_set_size(pet_dialog_label_, 280, 46);
-        lv_label_set_long_mode(pet_dialog_label_, LV_LABEL_LONG_WRAP);
-        lv_obj_set_style_text_align(pet_dialog_label_, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_text_color(pet_dialog_label_, lv_color_hex(0xB8AD98), 0);
-        lv_obj_set_style_text_color(pet_dialog_label_, lv_color_hex(0x29413A), 0);
-        lv_label_set_text(pet_dialog_label_, "点“对话”或按实体键和我说话");
-        lv_obj_align(pet_dialog_label_, LV_ALIGN_CENTER, 0, 76);
-        lv_label_set_text(pet_dialog_label_, "今日灵气甚好。\n可先安排一件修行之事。");
-        lv_label_set_text(pet_dialog_label_, "灵息汇聚，今日可选择修炼、历练或休息。");
-        lv_obj_center(pet_dialog_label_);
-        pet_dialog_timer_ = lv_timer_create(AdvanceDialogPage, 1500, this);
-        lv_timer_pause(pet_dialog_timer_);
-        pet_dialog_hide_timer_ = lv_timer_create(HideDialog, 6000, this);
-        lv_timer_pause(pet_dialog_hide_timer_);
-        lv_obj_add_flag(pet_dialog_panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(pet_dialog_label_, LV_OBJ_FLAG_HIDDEN);
+        pet_dialog_.Initialize(screen, home_assets_.dialog_background());
 
         pet_actions_ = lv_obj_create(screen);
         lv_obj_set_size(pet_actions_, 456, kActionButtonHeight);
@@ -1835,9 +708,7 @@ public:
         if (pet_stats_label_ != nullptr) {
             lv_obj_set_style_text_font(pet_stats_label_, text_font, 0);
         }
-        if (pet_dialog_label_ != nullptr) {
-            lv_obj_set_style_text_font(pet_dialog_label_, text_font, 0);
-        }
+        pet_dialog_.ApplyTextFont(text_font);
         if (status_label_ != nullptr) {
             lv_obj_set_style_text_font(status_label_, text_font, 0);
         }
@@ -2130,7 +1001,7 @@ public:
         if (cultivation_fill_ != nullptr) {
             constexpr uint32_t kCultivationCap = 100;
             constexpr int32_t kTrackInnerWidth = 168;
-            const uint32_t cultivation = std::min(state.cultivation, kCultivationCap);
+            const uint32_t cultivation = CultivationProgressInCurrentLayer(state.cultivation);
             const int32_t fill_width = std::max<int32_t>(1, static_cast<int32_t>(
                 (cultivation * kTrackInnerWidth) / kCultivationCap));
             lv_obj_set_width(cultivation_fill_, fill_width);
@@ -2139,48 +1010,7 @@ public:
 
     void SetPetDialog(const std::string& text) {
         DisplayLockGuard lock(this);
-        if (pet_dialog_label_ != nullptr && pet_dialog_panel_ != nullptr) {
-            if (text.empty()) {
-                pet_dialog_pages_.clear();
-                pet_dialog_page_index_ = 0;
-                if (pet_dialog_timer_ != nullptr) {
-                    lv_timer_pause(pet_dialog_timer_);
-                }
-                if (pet_dialog_hide_timer_ != nullptr) {
-                    lv_timer_pause(pet_dialog_hide_timer_);
-                }
-                lv_obj_add_flag(pet_dialog_panel_, LV_OBJ_FLAG_HIDDEN);
-                lv_obj_add_flag(pet_dialog_label_, LV_OBJ_FLAG_HIDDEN);
-                return;
-            }
-            std::string single_line = text;
-            for (char& ch : single_line) {
-                if (ch == '\r' || ch == '\n') {
-                    ch = ' ';
-                }
-            }
-            pet_dialog_pages_.clear();
-            for (size_t start = 0; start < single_line.size();) {
-                const size_t end = Utf8PageEnd(single_line, start, 28);
-                pet_dialog_pages_.push_back(single_line.substr(start, end - start));
-                start = end;
-            }
-            pet_dialog_page_index_ = 0;
-            ShowDialogPage();
-            if (pet_dialog_timer_ != nullptr) {
-                if (pet_dialog_pages_.size() > 1) {
-                    lv_timer_resume(pet_dialog_timer_);
-                } else {
-                    lv_timer_pause(pet_dialog_timer_);
-                }
-            }
-            if (pet_dialog_hide_timer_ != nullptr) {
-                lv_timer_reset(pet_dialog_hide_timer_);
-                lv_timer_resume(pet_dialog_hide_timer_);
-            }
-            lv_obj_remove_flag(pet_dialog_panel_, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_remove_flag(pet_dialog_label_, LV_OBJ_FLAG_HIDDEN);
-        }
+        pet_dialog_.Show(text);
     }
 
     void SetStatus(const char* status) override {
@@ -2227,7 +1057,7 @@ public:
     }
 
     void SetChatMessage(const char* role, const char* content) override {
-        if (pet_dialog_label_ == nullptr || content == nullptr || content[0] == '\0') {
+        if (content == nullptr || content[0] == '\0') {
             return;
         }
         if (role != nullptr && std::strcmp(role, "system") == 0) {
@@ -2366,10 +1196,71 @@ private:
         return game_time.unix_seconds;
     }
 
-    void SaveGameState() {
-        if (!game_state_store_.Save(game_engine_.state())) {
-            ESP_LOGW(TAG, "Failed to save immortal-pet game state");
+    static bool SameGameState(const immortal_pet::GameState& left,
+                              const immortal_pet::GameState& right) {
+        return left.cultivation == right.cultivation &&
+            left.spirit_stones == right.spirit_stones &&
+            left.bond == right.bond && left.energy == right.energy &&
+            left.mood == right.mood && left.activity == right.activity &&
+            left.activity_started_at == right.activity_started_at &&
+            left.activity_ends_at == right.activity_ends_at &&
+            left.energy_anchor_at == right.energy_anchor_at &&
+            left.cultivation_event == right.cultivation_event &&
+            left.cultivation_seed == right.cultivation_seed;
+    }
+
+    bool CommitGameEngine(const immortal_pet::GameEngine& candidate) {
+        if (SameGameState(game_engine_.state(), candidate.state())) {
+            return true;
         }
+        if (!game_state_store_.Save(candidate.state())) {
+            ESP_LOGW(TAG, "Failed to save immortal-pet game state; discarding mutation");
+            return false;
+        }
+        game_engine_ = candidate;
+        return true;
+    }
+
+    immortal_pet::GameError TickGameState(int64_t now) {
+        immortal_pet::GameEngine candidate = game_engine_;
+        const auto error = candidate.Tick(now);
+        if (error == immortal_pet::GameError::kOk && !CommitGameEngine(candidate)) {
+            return immortal_pet::GameError::kSaveFailed;
+        }
+        return error;
+    }
+
+    immortal_pet::GameError StartBreathingTransaction(int64_t now) {
+        immortal_pet::GameEngine candidate = game_engine_;
+        const auto error = candidate.StartBreathing(now);
+        if (!CommitGameEngine(candidate)) {
+            return immortal_pet::GameError::kSaveFailed;
+        }
+        return error;
+    }
+
+    immortal_pet::GameError StartJourneyTransaction(int64_t now, int64_t duration_seconds) {
+        immortal_pet::GameEngine candidate = game_engine_;
+        const auto error = candidate.StartBackMountainJourney(now, duration_seconds);
+        if (!CommitGameEngine(candidate)) {
+            return immortal_pet::GameError::kSaveFailed;
+        }
+        return error;
+    }
+
+    immortal_pet::ClaimResult ClaimActivityTransaction(int64_t now) {
+        immortal_pet::GameEngine candidate = game_engine_;
+        auto result = candidate.ClaimActivity(now);
+        if (!CommitGameEngine(candidate)) {
+            result.error = immortal_pet::GameError::kSaveFailed;
+        }
+        return result;
+    }
+
+    bool CancelActivityTransaction() {
+        immortal_pet::GameEngine candidate = game_engine_;
+        candidate.CancelActivity();
+        return CommitGameEngine(candidate);
     }
 
     void InitializeRtc() {
@@ -2457,20 +1348,27 @@ private:
 
     void CompleteActivityIfReady() {
         std::lock_guard<std::mutex> lock(game_mutex_);
-        if (game_engine_.state().activity != immortal_pet::Activity::kBreathing) {
-            return;
-        }
         const int64_t now = GameNowSeconds();
-        const auto& state = game_engine_.state();
         if (now < 0) {
             return;
         }
+        const uint8_t energy_before = game_engine_.state().energy;
+        if (TickGameState(now) != immortal_pet::GameError::kOk) {
+            return;
+        }
+        if (game_engine_.state().energy != energy_before) {
+            display_->UpdatePetStats(game_engine_.state());
+        }
+        if (game_engine_.state().activity != immortal_pet::Activity::kBreathing) {
+            return;
+        }
+        const auto& state = game_engine_.state();
         display_->SetCultivationCountdown(state.activity_ends_at - now);
         if (state.cultivation_event == immortal_pet::CultivationEvent::kEnlightenment &&
             now >= state.activity_started_at + immortal_pet::GameEngine::kBreathingDurationSeconds / 2) {
             display_->ShowCultivationEnlightenment();
         }
-        const auto result = game_engine_.ClaimActivity(now);
+        const auto result = ClaimActivityTransaction(now);
         if (result.error == immortal_pet::GameError::kNotReady) {
             return;
         }
@@ -2478,7 +1376,6 @@ private:
             ESP_LOGW(TAG, "Automatic cultivation settlement failed: %d", static_cast<int>(result.error));
             return;
         }
-        SaveGameState();
         display_->ExitCultivationScene(active_character_gender_);
         std::string message = "修炼结束：修为 +" + std::to_string(result.cultivation_gained) + "。";
         if (result.cultivation_event == immortal_pet::CultivationEvent::kEnlightenment) {
@@ -2502,13 +1399,16 @@ private:
 
     void HandlePetAction(CustomLcdDisplay::PetAction action) {
         Application::GetInstance().Schedule([this, action]() {
-            if (action == CustomLcdDisplay::PetAction::kTalk) {
-                Application::GetInstance().ToggleChatState();
+            if (action != CustomLcdDisplay::PetAction::kBreathing) {
+                display_->SetPetDialog("功能正在开发中，敬请期待。");
                 return;
             }
             std::lock_guard<std::mutex> lock(game_mutex_);
             const int64_t now = GameNowSeconds();
-            game_engine_.Tick(now);
+            if (TickGameState(now) != immortal_pet::GameError::kOk) {
+                UpdatePetDisplay("时间或存档不可用，暂时无法进行修炼。");
+                return;
+            }
             std::string message;
 
             if (action == CustomLcdDisplay::PetAction::kBreathing) {
@@ -2516,7 +1416,7 @@ private:
                 const auto activity = game_engine_.state().activity;
                 if (activity != immortal_pet::Activity::kIdle &&
                     now >= game_engine_.state().activity_ends_at) {
-                    const auto result = game_engine_.ClaimActivity(now);
+                    const auto result = ClaimActivityTransaction(now);
                     if (result.error == immortal_pet::GameError::kOk &&
                         activity == immortal_pet::Activity::kBreathing) {
                         settled_expired_cultivation = true;
@@ -2524,23 +1424,25 @@ private:
                     }
                 }
 
-                const auto error = game_engine_.StartBreathing(now);
+                const auto error = StartBreathingTransaction(now);
                 if (error == immortal_pet::GameError::kOk) {
                     if (display_->EnterCultivationScene(active_character_gender_, false)) {
                         message = settled_expired_cultivation ?
                             "上次修炼已结算，开始新的修炼。" : "你盘膝入定，开始修炼。";
                     } else {
-                        game_engine_.CancelActivity();
+                        const bool canceled = CancelActivityTransaction();
                         display_->ExitCultivationScene(active_character_gender_);
-                        message = "修炼场素材加载失败，未开始本次修炼。";
+                        message = canceled ? "修炼场素材加载失败，未开始本次修炼。" :
+                            "修炼场加载失败，且取消状态未能保存，请稍后重试。";
                     }
                 } else if (error == immortal_pet::GameError::kBusy) {
                     if (game_engine_.state().activity == immortal_pet::Activity::kBreathing) {
                         if (!display_->IsCultivationSceneActive()) {
                             if (!display_->EnterCultivationScene(active_character_gender_, false)) {
-                                game_engine_.CancelActivity();
+                                const bool canceled = CancelActivityTransaction();
                                 display_->ExitCultivationScene(active_character_gender_);
-                                message = "修炼场恢复失败，本次修炼已取消，请重试。";
+                                message = canceled ? "修炼场恢复失败，本次修炼已取消，请重试。" :
+                                    "修炼场恢复失败，且取消状态未能保存，请稍后重试。";
                             }
                         }
                         if (message.empty()) {
@@ -2550,20 +1452,24 @@ private:
                     } else {
                         message = "当前正在进行其他活动。";
                     }
+                } else if (error == immortal_pet::GameError::kSaveFailed) {
+                    message = "存档失败，本次修炼没有开始。";
                 } else {
                     message = "精力不足，先待机恢复一会儿吧。";
                 }
             } else if (action == CustomLcdDisplay::PetAction::kJourney) {
-                const auto error = game_engine_.StartBackMountainJourney(now, 10 * 60);
+                const auto error = StartJourneyTransaction(now, 10 * 60);
                 if (error == immortal_pet::GameError::kOk) {
                     message = "灵宠已动身前往后山，10分钟后回来。";
                 } else if (error == immortal_pet::GameError::kBusy) {
                     message = "灵宠正在进行其他活动。";
+                } else if (error == immortal_pet::GameError::kSaveFailed) {
+                    message = "存档失败，本次游历没有开始。";
                 } else {
                     message = "精力不足，暂时无法前往后山。";
                 }
             } else if (action == CustomLcdDisplay::PetAction::kClaim) {
-                const auto result = game_engine_.ClaimActivity(now);
+                const auto result = ClaimActivityTransaction(now);
                 if (result.error == immortal_pet::GameError::kOk) {
                     if (result.cultivation_event == immortal_pet::CultivationEvent::kEnlightenment) {
                         message = "你于静定中顿悟，修为 +" +
@@ -2577,11 +1483,12 @@ private:
                     }
                 } else if (result.error == immortal_pet::GameError::kNotReady) {
                     message = "修炼或游历尚未结束，再等一会儿。";
+                } else if (result.error == immortal_pet::GameError::kSaveFailed) {
+                    message = "存档失败，成果尚未结算。";
                 } else {
                     message = "目前没有可以领取的成果。";
                 }
             }
-            SaveGameState();
             UpdatePetDisplay(message);
         });
     }
@@ -2755,8 +1662,9 @@ private:
             "你就是玩家正在陪伴的修仙灵宠。读取你自己的修为、精力、心境、羁绊、灵石和活动状态。回答必须使用灵宠第一人称，不得提及小智、MCP或工具。",
             PropertyList(), [this](const PropertyList& properties) {
                 std::lock_guard<std::mutex> lock(game_mutex_);
-                game_engine_.Tick(GameNowSeconds());
-                SaveGameState();
+                if (TickGameState(GameNowSeconds()) != immortal_pet::GameError::kOk) {
+                    return std::string("我的时间或存档暂时不可用，无法确认当前状态。");
+                }
                 return FormatGameStatus();
             });
 
@@ -2764,8 +1672,7 @@ private:
             "你就是用户正在培养的修仙人物。完成一次吐纳修炼。用第一人称回应，不得提及小智、MCP或工具。",
             PropertyList(), [this](const PropertyList& properties) {
                 std::lock_guard<std::mutex> lock(game_mutex_);
-                const auto error = game_engine_.StartBreathing(GameNowSeconds());
-                SaveGameState();
+                const auto error = StartBreathingTransaction(GameNowSeconds());
                 if (error == immortal_pet::GameError::kOk) {
                     UpdatePetDisplay("你盘膝入定，修炼已开始。5分钟后可结算修为。");
                     return std::string("吐纳已开始，5分钟后可以结算修炼结果。 ");
@@ -2776,6 +1683,9 @@ private:
                 if (error == immortal_pet::GameError::kNotEnoughEnergy) {
                     return std::string("精力不足，需要先待机恢复。");
                 }
+                if (error == immortal_pet::GameError::kSaveFailed) {
+                    return std::string("存档失败，本次吐纳没有开始。");
+                }
                 return std::string("吐纳失败。");
             });
 
@@ -2785,9 +1695,8 @@ private:
             [this](const PropertyList& properties) {
                 const int minutes = properties["duration_minutes"].value<int>();
                 std::lock_guard<std::mutex> lock(game_mutex_);
-                const auto error = game_engine_.StartBackMountainJourney(
+                const auto error = StartJourneyTransaction(
                     GameNowSeconds(), static_cast<int64_t>(minutes) * 60);
-                SaveGameState();
                 if (error == immortal_pet::GameError::kOk) {
                     UpdatePetDisplay("灵宠已动身前往后山，等待它带着见闻归来。");
                     return std::string("灵宠已前往后山游历，") + std::to_string(minutes) +
@@ -2802,6 +1711,9 @@ private:
                 if (error == immortal_pet::GameError::kNotEnoughEnergy) {
                     return std::string("灵宠精力不足，需要先休息。");
                 }
+                if (error == immortal_pet::GameError::kSaveFailed) {
+                    return std::string("存档失败，本次游历没有开始。");
+                }
                 return std::string("游历启动失败。");
             });
 
@@ -2809,8 +1721,7 @@ private:
             "领取你这只灵宠已经完成的吐纳或后山游历成果。用第一人称向玩家讲述收获，不得提及小智、MCP或工具。",
             PropertyList(), [this](const PropertyList& properties) {
                 std::lock_guard<std::mutex> lock(game_mutex_);
-                const auto result = game_engine_.ClaimActivity(GameNowSeconds());
-                SaveGameState();
+                const auto result = ClaimActivityTransaction(GameNowSeconds());
                 if (result.error == immortal_pet::GameError::kNotReady) {
                     return std::string("当前活动还没有完成。");
                 }
@@ -2916,8 +1827,9 @@ public:
             }
         }
         display_->SetTfGameContentReady(tf_game_content_ready, tf_game_content_error);
-        game_engine_.Tick(GameNowSeconds());
-        SaveGameState();
+        if (TickGameState(GameNowSeconds()) != immortal_pet::GameError::kOk) {
+            ESP_LOGW(TAG, "Immortal-pet state was not refreshed at boot");
+        }
         display_->UpdatePetStats(game_engine_.state());
         if (tf_game_content_ready &&
             active_character_gender_ != immortal_pet::CharacterGender::kUnset &&
@@ -2926,6 +1838,16 @@ public:
             const auto& state = game_engine_.state();
             if (now < 0) {
                 ESP_LOGW(TAG, "Cultivation is active but trusted time is unavailable after reboot");
+            } else if (now >= state.activity_ends_at) {
+                const auto result = ClaimActivityTransaction(now);
+                if (result.error == immortal_pet::GameError::kOk) {
+                    display_->UpdatePetStats(game_engine_.state());
+                    display_->SetPetDialog("离线修炼已结算：修为 +" +
+                        std::to_string(result.cultivation_gained) + "。");
+                } else {
+                    ESP_LOGW(TAG, "Failed to settle completed cultivation after reboot: %d",
+                             static_cast<int>(result.error));
+                }
             } else {
             const bool enlightenment_visible =
                 state.cultivation_event == immortal_pet::CultivationEvent::kEnlightenment &&

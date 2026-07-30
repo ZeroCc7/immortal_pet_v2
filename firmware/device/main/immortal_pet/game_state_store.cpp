@@ -57,6 +57,21 @@ uint32_t Checksum(const PersistedGameState& state) {
     return HashValue(hash, state.cultivation_seed);
 }
 
+bool IsValidActivity(uint8_t activity) {
+    return activity <= static_cast<uint8_t>(Activity::kBackMountainJourney);
+}
+
+bool IsValidCultivationEvent(uint8_t event) {
+    return event <= static_cast<uint8_t>(CultivationEvent::kInnerDemon);
+}
+
+bool IsValidActivityTiming(const PersistedGameState& state) {
+    if (state.activity == static_cast<uint8_t>(Activity::kIdle)) {
+        return state.activity_started_at == 0 && state.activity_ends_at == 0;
+    }
+    return state.activity_started_at > 0 && state.activity_ends_at > state.activity_started_at;
+}
+
 }  // namespace
 
 bool GameStateStore::Load(GameState* state) const {
@@ -74,7 +89,9 @@ bool GameStateStore::Load(GameState* state) const {
     const esp_err_t error = nvs_get_blob(handle, kGameStateKey, &persisted, &size);
     nvs_close(handle);
     if (error != ESP_OK || size != sizeof(persisted) || persisted.magic != kMagic ||
-        persisted.version != kVersion || persisted.checksum != Checksum(persisted)) {
+        persisted.version != kVersion || persisted.checksum != Checksum(persisted) ||
+        persisted.energy > GameEngine::kMaxEnergy || !IsValidActivity(persisted.activity) ||
+        !IsValidCultivationEvent(persisted.cultivation_event) || !IsValidActivityTiming(persisted)) {
         return false;
     }
 
@@ -89,6 +106,7 @@ bool GameStateStore::Load(GameState* state) const {
     state->activity_ends_at = persisted.activity_ends_at;
     state->energy_anchor_at = persisted.energy_anchor_at;
     state->cultivation_seed = persisted.cultivation_seed;
+    state->schema_version = GameState::kSchemaVersion;
     return true;
 }
 

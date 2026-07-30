@@ -16,6 +16,7 @@ enum class GameError : uint8_t {
     kNotEnoughEnergy,
     kInvalidDuration,
     kClockMovedBackwards,
+    kSaveFailed,
     kNotReady,
     kNothingToClaim,
 };
