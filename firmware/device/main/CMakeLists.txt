@@ -103,6 +103,7 @@ if(CONFIG_IMMORTAL_PET_V2)
         "boards/waveshare/esp32-s3-touch-amoled-2.16/immortal_pet/cultivation_assets.cc"
         "boards/waveshare/esp32-s3-touch-amoled-2.16/immortal_pet/cultivation_scene.cc"
         "boards/waveshare/esp32-s3-touch-amoled-2.16/immortal_pet/home_assets.cc"
+        "boards/waveshare/esp32-s3-touch-amoled-2.16/immortal_pet/journey_scene.cc"
         "boards/waveshare/esp32-s3-touch-amoled-2.16/immortal_pet/pet_dialog.cc")
 endif()
 

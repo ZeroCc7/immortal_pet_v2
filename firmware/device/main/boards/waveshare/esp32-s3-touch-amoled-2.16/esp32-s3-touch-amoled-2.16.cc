@@ -30,6 +30,7 @@
 #include "immortal_pet/game_clock.h"
 #include "immortal_pet/cultivation_scene.h"
 #include "immortal_pet/home_assets.h"
+#include "immortal_pet/journey_scene.h"
 #include "immortal_pet/pet_dialog.h"
 #include "immortal_pet/game_engine.h"
 #include "immortal_pet/game_state_store.h"
@@ -180,6 +181,8 @@ private:
     std::unique_ptr<LvglAllocatedImage> scene_day_background_;
     std::unique_ptr<LvglAllocatedImage> scene_night_background_;
     immortal_pet_board::CultivationScene cultivation_scene_;
+    immortal_pet_board::JourneyScene journey_scene_;
+    const lv_font_t* journey_text_font_ = nullptr;
     bool scene_night_active_ = false;
     bool scene_background_initialized_ = false;
     immortal_pet::GameClock* game_clock_ = nullptr;
@@ -328,15 +331,14 @@ public:
         }
         Display::SetupUI();
         DisplayLockGuard lock(this);
-
         auto* screen = lv_screen_active();
         lv_obj_clean(screen);
         lv_obj_set_style_bg_color(screen, lv_color_hex(0x061614), 0);
         lv_obj_set_style_text_color(screen, lv_color_hex(0xF4E7CD), 0);
-
         auto* theme = static_cast<LvglTheme*>(current_theme_);
         auto* text_font = theme->text_font()->font();
         auto* icon_font = theme->icon_font()->font();
+        journey_text_font_ = text_font;
         lv_obj_set_style_text_font(screen, text_font, 0);
 
         if (!tf_game_content_ready_) {
@@ -698,6 +700,7 @@ public:
         if (text_font == nullptr || icon_font == nullptr) {
             return;
         }
+        journey_text_font_ = text_font;
         lv_obj_set_style_text_font(lv_screen_active(), text_font, 0);
         if (pet_title_label_ != nullptr) {
             lv_obj_set_style_text_font(pet_title_label_, text_font, 0);
@@ -921,16 +924,38 @@ public:
         DisplayLockGuard lock(this);
         cultivation_scene_.ShowEnlightenment();
     }
-
     void SetCultivationCountdown(int64_t seconds_remaining) {
         DisplayLockGuard lock(this);
         cultivation_scene_.SetCountdown(seconds_remaining);
     }
-
     bool IsCultivationSceneActive() const {
         return cultivation_scene_.active();
     }
-
+    void ShowJourneySelection(std::function<void()> on_confirm) {
+        DisplayLockGuard lock(this); journey_scene_.ShowSelection(lv_screen_active(), journey_text_font_, std::move(on_confirm), [this]() { journey_scene_.Exit(); });
+    }
+    void ShowJourneyBattle(bool night, immortal_pet::CharacterGender gender) {
+        DisplayLockGuard lock(this);
+        if (pet_actions_ != nullptr) {
+            lv_obj_add_flag(pet_actions_, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (pet_character_image_ != nullptr) {
+            lv_obj_add_flag(pet_character_image_, LV_OBJ_FLAG_HIDDEN);
+        }
+        journey_scene_.ShowBattle(lv_screen_active(), night, journey_text_font_, gender == immortal_pet::CharacterGender::kFemale, [this]() { ExitJourneyScene(); });
+    }
+    void SetJourneyMonster(uint8_t monster_index) {
+        DisplayLockGuard lock(this); journey_scene_.SetMonster(monster_index);
+    }
+    void PlayJourneyMonsterDefeat(std::function<void()> on_finished) {
+        DisplayLockGuard lock(this); journey_scene_.PlayMonsterDefeat(std::move(on_finished));
+    }
+    void ExitJourneyScene() {
+        DisplayLockGuard lock(this);
+        journey_scene_.Exit();
+        if (pet_actions_ != nullptr) lv_obj_remove_flag(pet_actions_, LV_OBJ_FLAG_HIDDEN);
+        if (pet_character_image_ != nullptr) lv_obj_remove_flag(pet_character_image_, LV_OBJ_FLAG_HIDDEN);
+    }
     void LoadHomepageDecorationsFromSd() {
         home_assets_.Load();
         displayed_realm_layer_ = 0;
@@ -1200,13 +1225,16 @@ private:
                               const immortal_pet::GameState& right) {
         return left.cultivation == right.cultivation &&
             left.spirit_stones == right.spirit_stones &&
-            left.bond == right.bond && left.energy == right.energy &&
-            left.mood == right.mood && left.activity == right.activity &&
+            left.energy == right.energy && left.activity == right.activity &&
             left.activity_started_at == right.activity_started_at &&
             left.activity_ends_at == right.activity_ends_at &&
             left.energy_anchor_at == right.energy_anchor_at &&
             left.cultivation_event == right.cultivation_event &&
-            left.cultivation_seed == right.cultivation_seed;
+            left.cultivation_seed == right.cultivation_seed &&
+            left.journey_stage_id == right.journey_stage_id &&
+            left.journey_monster_index == right.journey_monster_index &&
+            left.journey_stage_clear_mask == right.journey_stage_clear_mask &&
+            left.journey_battle_seed == right.journey_battle_seed;
     }
 
     bool CommitGameEngine(const immortal_pet::GameEngine& candidate) {
@@ -1239,9 +1267,9 @@ private:
         return error;
     }
 
-    immortal_pet::GameError StartJourneyTransaction(int64_t now, int64_t duration_seconds) {
+    immortal_pet::GameError StartJourneyTransaction(int64_t now, int64_t) {
         immortal_pet::GameEngine candidate = game_engine_;
-        const auto error = candidate.StartBackMountainJourney(now, duration_seconds);
+        const auto error = candidate.StartJourney(now, 1);
         if (!CommitGameEngine(candidate)) {
             return immortal_pet::GameError::kSaveFailed;
         }
@@ -1254,6 +1282,13 @@ private:
         if (!CommitGameEngine(candidate)) {
             result.error = immortal_pet::GameError::kSaveFailed;
         }
+        return result;
+    }
+
+    immortal_pet::ClaimResult ResolveJourneyMonsterTransaction(int64_t now) {
+        immortal_pet::GameEngine candidate = game_engine_;
+        auto result = candidate.ResolveJourneyMonster(now);
+        if (!CommitGameEngine(candidate)) result.error = immortal_pet::GameError::kSaveFailed;
         return result;
     }
 
@@ -1325,13 +1360,11 @@ private:
         const char* activity = "空闲";
         if (state.activity == immortal_pet::Activity::kBreathing) {
             activity = "吐纳中";
-        } else if (state.activity == immortal_pet::Activity::kBackMountainJourney) {
+        } else if (state.activity == immortal_pet::Activity::kJourney) {
             activity = "后山游历中";
         }
         return "洞府状态：修为 " + std::to_string(state.cultivation) +
             "，精力 " + std::to_string(state.energy) +
-            "，心境 " + std::to_string(state.mood) +
-            "，羁绊 " + std::to_string(state.bond) +
             "，灵石 " + std::to_string(state.spirit_stones) +
             "，当前活动 " + activity + "。";
     }
@@ -1358,6 +1391,26 @@ private:
         }
         if (game_engine_.state().energy != energy_before) {
             display_->UpdatePetStats(game_engine_.state());
+        }
+        if (game_engine_.state().activity == immortal_pet::Activity::kJourney) {
+            const auto& state = game_engine_.state();
+            const int64_t next_at = state.activity_started_at +
+                static_cast<int64_t>(state.journey_monster_index + 1) * 60;
+            if (now < next_at) return;
+            const auto result = ResolveJourneyMonsterTransaction(now);
+            if (result.error != immortal_pet::GameError::kOk) return;
+            display_->UpdatePetStats(game_engine_.state());
+            if (game_engine_.state().activity == immortal_pet::Activity::kJourney) {
+                const uint8_t next_monster = game_engine_.state().journey_monster_index;
+                display_->SetPetDialog("击败妖兽，获得灵石 +" + std::to_string(result.spirit_stones_gained) + "。");
+                display_->PlayJourneyMonsterDefeat([this, next_monster]() {
+                    display_->SetJourneyMonster(next_monster);
+                });
+            } else {
+                display_->SetPetDialog("青岚灵墟通关，获得灵石 +" + std::to_string(result.spirit_stones_gained) + "。");
+                display_->PlayJourneyMonsterDefeat([this]() { display_->ExitJourneyScene(); });
+            }
+            return;
         }
         if (game_engine_.state().activity != immortal_pet::Activity::kBreathing) {
             return;
@@ -1399,7 +1452,8 @@ private:
 
     void HandlePetAction(CustomLcdDisplay::PetAction action) {
         Application::GetInstance().Schedule([this, action]() {
-            if (action != CustomLcdDisplay::PetAction::kBreathing) {
+            if (action != CustomLcdDisplay::PetAction::kBreathing &&
+                action != CustomLcdDisplay::PetAction::kJourney) {
                 display_->SetPetDialog("功能正在开发中，敬请期待。");
                 return;
             }
@@ -1458,16 +1512,26 @@ private:
                     message = "精力不足，先待机恢复一会儿吧。";
                 }
             } else if (action == CustomLcdDisplay::PetAction::kJourney) {
-                const auto error = StartJourneyTransaction(now, 10 * 60);
-                if (error == immortal_pet::GameError::kOk) {
-                    message = "灵宠已动身前往后山，10分钟后回来。";
-                } else if (error == immortal_pet::GameError::kBusy) {
-                    message = "灵宠正在进行其他活动。";
-                } else if (error == immortal_pet::GameError::kSaveFailed) {
-                    message = "存档失败，本次游历没有开始。";
-                } else {
-                    message = "精力不足，暂时无法前往后山。";
-                }
+                display_->ShowJourneySelection([this]() {
+                    std::lock_guard<std::mutex> lock(game_mutex_);
+                    const int64_t journey_now = GameNowSeconds();
+                    if (journey_now < 0) {
+                        display_->ExitJourneyScene();
+                        UpdatePetDisplay("时间不可用，暂时无法开始历练。");
+                        return;
+                    }
+                    const auto error = StartJourneyTransaction(journey_now, 0);
+                    if (error != immortal_pet::GameError::kOk) {
+                        display_->ExitJourneyScene();
+                        UpdatePetDisplay("历练未能开始：精力不足或存档失败。");
+                        return;
+                    }
+                    const auto time = game_clock_.Now();
+                    display_->ShowJourneyBattle(time.is_night, active_character_gender_);
+                    display_->UpdatePetStats(game_engine_.state());
+                    display_->SetPetDialog("进入青岚灵墟，柳鬼现身。");
+                });
+                return;
             } else if (action == CustomLcdDisplay::PetAction::kClaim) {
                 const auto result = ClaimActivityTransaction(now);
                 if (result.error == immortal_pet::GameError::kOk) {
@@ -1742,8 +1806,7 @@ private:
                 }
                 return std::string("活动完成：获得修为 ") +
                     std::to_string(result.cultivation_gained) + "，灵石 " +
-                    std::to_string(result.spirit_stones_gained) + "，材料 " +
-                    std::to_string(result.materials_gained) + "。";
+                    std::to_string(result.spirit_stones_gained) + "。";
             });
 #endif
     }
@@ -1860,6 +1923,14 @@ public:
                 display_->SetCultivationCountdown(state.activity_ends_at - now);
                 ESP_LOGI(TAG, "Restored active cultivation scene after reboot");
             }
+            }
+        }
+        if (tf_game_content_ready && active_character_gender_ != immortal_pet::CharacterGender::kUnset &&
+            game_engine_.state().activity == immortal_pet::Activity::kJourney) {
+            const auto time = game_clock_.Now();
+            if (time.synchronized && !time.clock_rolled_back) {
+                display_->ShowJourneyBattle(time.is_night, active_character_gender_);
+                display_->SetJourneyMonster(game_engine_.state().journey_monster_index);
             }
         }
         if (tf_game_content_ready &&

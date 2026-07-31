@@ -75,8 +75,9 @@ morning/noon/evening action system.
   layer one, every 100 cultivation advances one layer, and every realm has 15 layers.
 - Energy is capped at 100 and recovers at the rate defined by `GameEngine`. Cultivation lasts five
   minutes, costs ten energy at start, and automatically settles once when it ends; there is no
-  player-facing claim step. Journey reuses the timed-activity lifecycle but does not consume energy
-  or spirit stones; its per-monster rewards are defined by the selected stage.
+  player-facing claim step. Journey reuses the timed-activity lifecycle, costs one energy during
+  device testing (restore the production balance before release), and grants only the selected
+  stage's per-monster spirit-stone rewards.
 - Time must be trusted: network time updates the RTC, a valid RTC restores wall time during an
   offline cold boot, and a rolled-back or invalid clock must not settle an activity or mutate saves.
   The home clock, day/night background, activity recovery, and activity settlement share this source.
