@@ -30,6 +30,7 @@
 #include "immortal_pet/game_clock.h"
 #include "immortal_pet/cultivation_scene.h"
 #include "immortal_pet/home_assets.h"
+#include "immortal_pet/shop_scene.h"
 #include "immortal_pet/journey_scene.h"
 #include "immortal_pet/pet_dialog.h"
 #include "immortal_pet/game_engine.h"
@@ -121,6 +122,7 @@ public:
     enum class PetAction {
         kBreathing,
         kJourney,
+        kShop,
         kClaim,
         kTalk,
     };
@@ -182,9 +184,11 @@ private:
     std::unique_ptr<LvglAllocatedImage> scene_night_background_;
     immortal_pet_board::CultivationScene cultivation_scene_;
     immortal_pet_board::JourneyScene journey_scene_;
+    immortal_pet_board::ShopScene shop_scene_;
     const lv_font_t* journey_text_font_ = nullptr;
     bool scene_night_active_ = false;
     bool scene_background_initialized_ = false;
+    bool journey_home_resources_released_ = false;
     immortal_pet::GameClock* game_clock_ = nullptr;
     lv_timer_t* home_clock_timer_ = nullptr;
     bool home_clock_shows_date_ = true;
@@ -219,6 +223,7 @@ private:
     std::unique_ptr<LayeredAsset> layered_body_;
     std::unique_ptr<LayeredAsset> layered_weapon_;
     bool layered_actor_loaded_ = false;
+    bool layered_appearance_locked_ = false;
     immortal_pet::CharacterGender character_gender_ =
         immortal_pet::CharacterGender::kUnset;
     uint8_t layered_stand_direction_ = 6;
@@ -267,6 +272,7 @@ private:
     #include "immortal_pet/layered_idle_actor_05.inc"
     #include "immortal_pet/layered_idle_actor_06.inc"
     #include "immortal_pet/layered_idle_actor_07.inc"
+    #include "immortal_pet/shop_display.inc"
 
 #endif
 
@@ -629,7 +635,7 @@ public:
         CreateActionButton(pet_actions_, 2, "札记", MATERIAL_SYMBOLS_EDIT_SQUARE,
                            PetAction::kTalk, icon_font);
         CreateActionButton(pet_actions_, 3, "商城", MATERIAL_SYMBOLS_DOWNLOAD,
-                           PetAction::kClaim, icon_font);
+                           PetAction::kShop, icon_font);
 
         gender_selection_overlay_ = lv_obj_create(screen);
         lv_obj_set_size(gender_selection_overlay_, 480, 480);
@@ -712,6 +718,7 @@ public:
             lv_obj_set_style_text_font(pet_stats_label_, text_font, 0);
         }
         pet_dialog_.ApplyTextFont(text_font);
+        journey_scene_.ApplyTextFont(text_font);
         if (status_label_ != nullptr) {
             lv_obj_set_style_text_font(status_label_, text_font, 0);
         }
@@ -771,11 +778,14 @@ public:
         }
     }
 
-    bool LoadCharacterAnimationsFromSd(immortal_pet::CharacterGender gender) {
+    bool LoadCharacterAnimationsFromSd(immortal_pet::CharacterGender gender,
+                                       const immortal_pet::GameState* state = nullptr) {
 #if CONFIG_IMMORTAL_PET_LAYERED_ASSET_TEST
-        if (LoadLayeredActorFromSd(gender, 0)) {
+        if ((state != nullptr && ApplyEquippedAppearance(*state, gender)) ||
+            (state == nullptr && LoadLayeredActorFromSd(gender, 0))) {
 #else
-        if (LoadLayeredActorFromSd(gender)) {
+        if ((state != nullptr && ApplyEquippedAppearance(*state, gender)) ||
+            (state == nullptr && LoadLayeredActorFromSd(gender))) {
 #endif
             female_initial_loaded_ = true;
             layered_stand_direction_ = 6;
@@ -931,31 +941,7 @@ public:
     bool IsCultivationSceneActive() const {
         return cultivation_scene_.active();
     }
-    void ShowJourneySelection(std::function<void()> on_confirm) {
-        DisplayLockGuard lock(this); journey_scene_.ShowSelection(lv_screen_active(), journey_text_font_, std::move(on_confirm), [this]() { journey_scene_.Exit(); });
-    }
-    void ShowJourneyBattle(bool night, immortal_pet::CharacterGender gender) {
-        DisplayLockGuard lock(this);
-        if (pet_actions_ != nullptr) {
-            lv_obj_add_flag(pet_actions_, LV_OBJ_FLAG_HIDDEN);
-        }
-        if (pet_character_image_ != nullptr) {
-            lv_obj_add_flag(pet_character_image_, LV_OBJ_FLAG_HIDDEN);
-        }
-        journey_scene_.ShowBattle(lv_screen_active(), night, journey_text_font_, gender == immortal_pet::CharacterGender::kFemale, [this]() { ExitJourneyScene(); });
-    }
-    void SetJourneyMonster(uint8_t monster_index) {
-        DisplayLockGuard lock(this); journey_scene_.SetMonster(monster_index);
-    }
-    void PlayJourneyMonsterDefeat(std::function<void()> on_finished) {
-        DisplayLockGuard lock(this); journey_scene_.PlayMonsterDefeat(std::move(on_finished));
-    }
-    void ExitJourneyScene() {
-        DisplayLockGuard lock(this);
-        journey_scene_.Exit();
-        if (pet_actions_ != nullptr) lv_obj_remove_flag(pet_actions_, LV_OBJ_FLAG_HIDDEN);
-        if (pet_character_image_ != nullptr) lv_obj_remove_flag(pet_character_image_, LV_OBJ_FLAG_HIDDEN);
-    }
+    #include "immortal_pet/journey_display.inc"
     void LoadHomepageDecorationsFromSd() {
         home_assets_.Load();
         displayed_realm_layer_ = 0;
@@ -1167,6 +1153,8 @@ private:
     int64_t last_rtc_write_time_ = 0;
     sdmmc_card_t* tf_card_ = nullptr;
     bool tf_card_mounted_ = false;
+    bool journey_audio_focus_active_ = false;
+    esp_timer_handle_t journey_audio_resume_timer_ = nullptr;
 
     void InitializeTfCard() {
         constexpr spi_host_device_t kTfCardSpiHost = SPI3_HOST;
@@ -1234,7 +1222,16 @@ private:
             left.journey_stage_id == right.journey_stage_id &&
             left.journey_monster_index == right.journey_monster_index &&
             left.journey_stage_clear_mask == right.journey_stage_clear_mask &&
-            left.journey_battle_seed == right.journey_battle_seed;
+            left.journey_battle_seed == right.journey_battle_seed &&
+            left.journey_cultivation_at_start == right.journey_cultivation_at_start &&
+            left.journey_player_max_hp == right.journey_player_max_hp &&
+            left.journey_player_hp == right.journey_player_hp &&
+            left.journey_monster_max_hp == right.journey_monster_max_hp &&
+            left.journey_monster_hp == right.journey_monster_hp &&
+            left.journey_turn_index == right.journey_turn_index &&
+            left.owned_shop_items == right.owned_shop_items &&
+            left.equipped_weapon == right.equipped_weapon &&
+            left.equipped_suit == right.equipped_suit;
     }
 
     bool CommitGameEngine(const immortal_pet::GameEngine& candidate) {
@@ -1285,11 +1282,29 @@ private:
         return result;
     }
 
-    immortal_pet::ClaimResult ResolveJourneyMonsterTransaction(int64_t now) {
+    immortal_pet::JourneyTurnResult ResolveJourneyTurnTransaction(int64_t now) {
         immortal_pet::GameEngine candidate = game_engine_;
-        auto result = candidate.ResolveJourneyMonster(now);
+        auto result = candidate.ResolveJourneyTurn(now);
         if (!CommitGameEngine(candidate)) result.error = immortal_pet::GameError::kSaveFailed;
         return result;
+    }
+
+    immortal_pet::GameError ExpireJourneyTransaction(int64_t now) {
+        immortal_pet::GameEngine candidate = game_engine_;
+        const auto error = candidate.ExpireJourney(now);
+        if (error == immortal_pet::GameError::kOk && !CommitGameEngine(candidate)) {
+            return immortal_pet::GameError::kSaveFailed;
+        }
+        return error;
+    }
+
+    immortal_pet::GameError BuyOrEquipShopItem(immortal_pet::ShopItemId item_id) {
+        immortal_pet::GameEngine candidate = game_engine_;
+        const auto error = immortal_pet::IsShopItemOwned(candidate.state().owned_shop_items, item_id) ?
+            candidate.Equip(item_id) : candidate.BuyAndEquip(item_id);
+        if (error != immortal_pet::GameError::kOk) return error;
+        return CommitGameEngine(candidate) ? immortal_pet::GameError::kOk :
+            immortal_pet::GameError::kSaveFailed;
     }
 
     bool CancelActivityTransaction() {
@@ -1297,6 +1312,8 @@ private:
         candidate.CancelActivity();
         return CommitGameEngine(candidate);
     }
+
+    #include "immortal_pet/journey_focus.inc"
 
     void InitializeRtc() {
         if (!rtc_.Initialize(i2c_bus_)) {
@@ -1394,21 +1411,10 @@ private:
         }
         if (game_engine_.state().activity == immortal_pet::Activity::kJourney) {
             const auto& state = game_engine_.state();
-            const int64_t next_at = state.activity_started_at +
-                static_cast<int64_t>(state.journey_monster_index + 1) * 60;
-            if (now < next_at) return;
-            const auto result = ResolveJourneyMonsterTransaction(now);
-            if (result.error != immortal_pet::GameError::kOk) return;
-            display_->UpdatePetStats(game_engine_.state());
-            if (game_engine_.state().activity == immortal_pet::Activity::kJourney) {
-                const uint8_t next_monster = game_engine_.state().journey_monster_index;
-                display_->SetPetDialog("击败妖兽，获得灵石 +" + std::to_string(result.spirit_stones_gained) + "。");
-                display_->PlayJourneyMonsterDefeat([this, next_monster]() {
-                    display_->SetJourneyMonster(next_monster);
-                });
-            } else {
-                display_->SetPetDialog("青岚灵墟通关，获得灵石 +" + std::to_string(result.spirit_stones_gained) + "。");
-                display_->PlayJourneyMonsterDefeat([this]() { display_->ExitJourneyScene(); });
+            if (now >= state.activity_ends_at &&
+                ExpireJourneyTransaction(now) == immortal_pet::GameError::kOk) {
+                ExitJourneyFocusMode();
+                UpdatePetDisplay("历练时间结束，已提前返回洞府。");
             }
             return;
         }
@@ -1452,6 +1458,26 @@ private:
 
     void HandlePetAction(CustomLcdDisplay::PetAction action) {
         Application::GetInstance().Schedule([this, action]() {
+            if (action == CustomLcdDisplay::PetAction::kShop) {
+                std::lock_guard<std::mutex> lock(game_mutex_);
+                display_->ShowShop(game_engine_.state(), active_character_gender_, [this](immortal_pet::ShopItemId item_id) {
+                    Application::GetInstance().Schedule([this, item_id]() {
+                        std::lock_guard<std::mutex> lock(game_mutex_);
+                        const auto error = BuyOrEquipShopItem(item_id);
+                        if (error == immortal_pet::GameError::kOk) {
+                            display_->UpdatePetStats(game_engine_.state());
+                            display_->UpdateShop(game_engine_.state());
+                            display_->SetShopFeedback("购买成功，已保存；下次启动自动换装。");
+                        } else {
+                            display_->SetShopFeedback(error == immortal_pet::GameError::kItemLocked ?
+                                "境界不足，暂不能购买此装备。" :
+                                error == immortal_pet::GameError::kNotEnoughSpiritStones ?
+                                "灵石不足，暂不能购买此装备。" : "装备操作失败，未更改存档。");
+                        }
+                    });
+                });
+                return;
+            }
             if (action != CustomLcdDisplay::PetAction::kBreathing &&
                 action != CustomLcdDisplay::PetAction::kJourney) {
                 display_->SetPetDialog("功能正在开发中，敬请期待。");
@@ -1527,7 +1553,13 @@ private:
                         return;
                     }
                     const auto time = game_clock_.Now();
-                    display_->ShowJourneyBattle(time.is_night, active_character_gender_);
+                    EnterJourneyFocusMode();
+                    display_->ShowJourneyBattle(time.is_night, active_character_gender_, 0,
+                                                game_engine_.state().equipped_suit,
+                                                game_engine_.state().equipped_weapon,
+                                                game_engine_.journey_battle(),
+                                                [this]() { AdvanceJourneyCombat(); },
+                                                [this]() { HandleJourneySceneLoadFailure(); });
                     display_->UpdatePetStats(game_engine_.state());
                     display_->SetPetDialog("进入青岚灵墟，柳鬼现身。");
                 });
@@ -1881,7 +1913,7 @@ public:
             if (!display_->LoadDongfuSceneFromSd()) {
                 tf_game_content_error = "洞府场景素材加载失败";
             } else if (character_gender != immortal_pet::CharacterGender::kUnset &&
-                       !display_->LoadCharacterAnimationsFromSd(character_gender)) {
+                       !display_->LoadCharacterAnimationsFromSd(character_gender, &game_engine_.state())) {
                 tf_game_content_error = "人物素材加载失败";
             } else {
                 display_->LoadHomepageDecorationsFromSd();
@@ -1925,14 +1957,6 @@ public:
             }
             }
         }
-        if (tf_game_content_ready && active_character_gender_ != immortal_pet::CharacterGender::kUnset &&
-            game_engine_.state().activity == immortal_pet::Activity::kJourney) {
-            const auto time = game_clock_.Now();
-            if (time.synchronized && !time.clock_rolled_back) {
-                display_->ShowJourneyBattle(time.is_night, active_character_gender_);
-                display_->SetJourneyMonster(game_engine_.state().journey_monster_index);
-            }
-        }
         if (tf_game_content_ready &&
             character_gender == immortal_pet::CharacterGender::kUnset) {
             display_->ShowGenderSelection();
@@ -1945,6 +1969,7 @@ public:
         InitializeButtons();
         InitializeTools();
 #if CONFIG_IMMORTAL_PET_V2
+        ResumeJourneySceneAfterBoot(tf_game_content_ready);
         StartRtcSyncTimer();
         StartGameActivityTimer();
 #endif

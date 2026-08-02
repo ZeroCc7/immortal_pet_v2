@@ -23,6 +23,7 @@
             lv_timer_reset(autonomous_behavior_timer_);
         }
         if (layered_actor_loaded_ && layered_weapon_ != nullptr &&
+            !layered_appearance_locked_ &&
             layered_actor_change_timer_ == nullptr) {
             layered_actor_change_timer_ = lv_timer_create([](lv_timer_t* timer) {
                 auto* display = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
@@ -67,6 +68,9 @@
     }
 
     void ResumeIdleAfterAction() {
+        if (journey_home_resources_released_) {
+            return;
+        }
         if (idle_resume_timer_ != nullptr) {
             lv_timer_delete(idle_resume_timer_);
         }
@@ -124,6 +128,9 @@
                 } else {
                     PlayCharacterAnimation(CharacterAnimation::kJourney);
                 }
+                break;
+            case PetAction::kShop:
+                // The shop immediately opens its own full-screen scene.
                 break;
             case PetAction::kClaim:
                 PlayCharacterAnimation(CharacterAnimation::kClaim);

@@ -9,7 +9,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[4]
 SOURCE = ROOT / "docs/images/raw"
 OUTPUT = ROOT / "docs/images/sdcard/immortal_pet/layered_idle"
-DIRS = {"stand": {5, 6}, "walk": {0, 4}}
+ACTION_DIRECTIONS = {
+    "stand": {5, 6},
+    "walk": {0, 4},
+    "attack": {0, 1, 2, 3},
+}
 FAMILY_NAMES = {
     "all_女火": "female_fire",
     "all_女金": "female_metal",
@@ -38,9 +42,16 @@ def export_action(
     canvas = read(animation).get("canvas", {})
     all_directions = data.get("directions", [])
     directions = [
-        item for item in all_directions if item.get("index") in DIRS[action]
+        item
+        for item in all_directions
+        if item.get("index") in ACTION_DIRECTIONS[action]
     ]
-    if len(directions) != 2 and reference is not None and len(all_directions) == 1:
+    expected_direction_count = len(ACTION_DIRECTIONS[action])
+    if (
+        len(directions) != expected_direction_count
+        and reference is not None
+        and len(all_directions) == 1
+    ):
         serial = {
             frame.get("source_frame"): frame
             for frame in all_directions[0].get("frames", [])
@@ -54,7 +65,7 @@ def export_action(
             if any(frame is None for frame in frames):
                 return None
             directions.append({"index": item["index"], "frames": frames})
-    if len(directions) != 2:
+    if len(directions) != expected_direction_count:
         return None
 
     exported_directions = []
@@ -105,7 +116,7 @@ def export_asset(
             action,
             reference.get(action) if reference else None,
         )
-        for action in DIRS
+        for action in ACTION_DIRECTIONS
     }
     if any(value is None for value in result.values()):
         return None
@@ -117,8 +128,28 @@ def export_asset(
     return result
 
 
+def export_attack_only_asset(
+    source: Path,
+    destination: Path,
+    reference: dict,
+) -> bool:
+    attack = export_action(source, destination, "attack", reference)
+    if attack is None:
+        return False
+    destination.mkdir(parents=True, exist_ok=True)
+    (destination / "actor.json").write_text(
+        json.dumps(
+            {"attack": attack},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    return True
+
+
 def compatible(body: dict, weapon: dict) -> bool:
-    for action in DIRS:
+    for action in ACTION_DIRECTIONS:
         body_directions = {
             item["index"]: item["frames"]
             for item in body[action]["directions"]
@@ -179,8 +210,14 @@ def main() -> None:
                     OUTPUT / family / "weapons" / base.name / weapon.name,
                     body_config,
                 )
-                if weapon_config is not None:
-                    model_weapons.append((weapon.name, weapon_config))
+                if weapon_config is None:
+                    export_attack_only_asset(
+                        weapon,
+                        OUTPUT / family / "weapons" / base.name / weapon.name,
+                        body_config["attack"],
+                    )
+                    continue
+                model_weapons.append((weapon.name, weapon_config))
             weapon_configs[base.name] = model_weapons
 
             entries.extend(
